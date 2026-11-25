@@ -3,7 +3,7 @@
 
 The check is chosen by file name:
 
-  *.cyclonedx.json  CycloneDX 1.7 JSON schema
+  *.cyclonedx.json  CycloneDX 1.7 JSON schema (also *.cdx.json)
   *.spdx2.json      SPDX 2.3 JSON schema
   *.spdx.json       SPDX 2.3 or 3.0.1, detected from the content
   *.spdx3.json      SPDX 3.0.1 JSON schema and SHACL shapes (semantic check)
@@ -125,7 +125,7 @@ def main() -> int:
     failed = 0
     for path in args.files:
         name = path.name.lower()
-        if name.endswith(".cyclonedx.json"):
+        if name.endswith((".cyclonedx.json", ".cdx.json")):
             kind, check = "CycloneDX 1.7", validators.cyclonedx
         elif name.endswith(".spdx3.json"):
             kind, check = "SPDX 3.0.1", validators.spdx3

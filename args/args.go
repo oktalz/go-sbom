@@ -37,7 +37,7 @@ type Config struct {
 	Exclude       ffval.StringList `ff:"short: e, long: exclude,        usage: 'module path prefixes or globs to skip in --check, comma-separated or repeatable (e.g. company.com/internal)'"`
 	Licence       ffval.StringList `ff:"long: licence,                  usage: 'set license for a package (e.g. company.com/pkg:MIT, repeatable)'"`
 	File          string           `ff:"short: f, long: file,           usage: 'file to analyze (binary or go.mod); can also be given as the first argument'"`
-	Output        string           `ff:"short: o, long: output,         usage: 'output file (.txt, .yml, .csv, .json, .cyclonedx.json, .spdx.json, .spdx2.json, .spdx3.json)'"`
+	Output        string           `ff:"short: o, long: output,         usage: 'output file (.txt, .yml, .csv, .json, .cyclonedx.json or .cdx.json, .spdx.json, .spdx2.json, .spdx3.json)'"`
 	Format        string           `ff:"long: format,                   usage: 'output format override (text, csv, yaml, json, cyclonedx, spdx, spdx2, spdx3)'"`
 	Config        string           `ff:"short: c, long: config,         usage: 'YAML config file with flag values (default: .go-sbom.yml or .go-sbom.yaml)'"`
 	JUnitFile     string           `ff:"long: junit-file,               usage: 'write a JUnit XML report of the license check (used with --check)'"`

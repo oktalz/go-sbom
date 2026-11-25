@@ -62,7 +62,7 @@ FLAGS
   -e, --exclude STRING           module path prefixes or globs to skip in --check, comma-separated or repeatable (e.g. company.com/internal)
       --licence STRING           set license for a package (e.g. company.com/pkg:MIT, repeatable)
   -f, --file STRING              file to analyze (binary or go.mod); can also be given as the first argument
-  -o, --output STRING            output file (.txt, .yml, .csv, .json, .cyclonedx.json, .spdx.json, .spdx2.json, .spdx3.json)
+  -o, --output STRING            output file (.txt, .yml, .csv, .json, .cyclonedx.json or .cdx.json, .spdx.json, .spdx2.json, .spdx3.json)
       --format STRING            output format override (text, csv, yaml, json, cyclonedx, spdx, spdx2, spdx3)
   -c, --config STRING            YAML config file with flag values (default: .go-sbom.yml or .go-sbom.yaml)
       --junit-file STRING        write a JUnit XML report of the license check (used with --check)
@@ -138,7 +138,7 @@ When several files or several licenses in one file are found, they are combined 
 go-sbom -f go.mod -o sbom.cyclonedx.json
 ```
 
-Produces a [CycloneDX](https://cyclonedx.org/) 1.7 SBOM in JSON format with Package URLs (purl) for each component.
+Produces a [CycloneDX](https://cyclonedx.org/) 1.7 SBOM in JSON format with Package URLs (purl) for each component. The shorter `.cdx.json` extension works too.
 
 #### Export to SPDX JSON
 

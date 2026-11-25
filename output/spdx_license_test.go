@@ -174,7 +174,7 @@ func TestWriteUnsupportedFormatCreatesNoFile(t *testing.T) {
 func TestFormatFromPath(t *testing.T) {
 	tests := map[string]string{
 		"a.txt": "text", "a.CSV": "csv", "a.yml": "yaml", "a.yaml": "yaml",
-		"a.json": "json", "a.cyclonedx.json": "cyclonedx", "a.spdx.json": "spdx", "a.SPDX2.json": "spdx2", "a.spdx3.json": "spdx3",
+		"a.json": "json", "a.cyclonedx.json": "cyclonedx", "a.cdx.json": "cyclonedx", "a.CDX.JSON": "cyclonedx", "a.spdx.json": "spdx", "a.SPDX2.json": "spdx2", "a.spdx3.json": "spdx3",
 	}
 	for path, want := range tests {
 		got, err := FormatFromPath(path)

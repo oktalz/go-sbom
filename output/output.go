@@ -69,7 +69,7 @@ func IsFormat(f string) bool {
 func FormatFromPath(path string) (string, error) {
 	lower := strings.ToLower(path)
 	switch {
-	case strings.HasSuffix(lower, ".cyclonedx.json"):
+	case strings.HasSuffix(lower, ".cyclonedx.json"), strings.HasSuffix(lower, ".cdx.json"):
 		return "cyclonedx", nil
 	case strings.HasSuffix(lower, ".spdx2.json"):
 		return "spdx2", nil
@@ -88,12 +88,12 @@ func FormatFromPath(path string) (string, error) {
 	case ".txt":
 		return "text", nil
 	default:
-		return "", fmt.Errorf("unsupported output format %q (use .txt, .yml, .csv, .json, .cyclonedx.json, .spdx.json, .spdx2.json, or .spdx3.json)", ext)
+		return "", fmt.Errorf("unsupported output format %q (use .txt, .yml, .csv, .json, .cyclonedx.json, .cdx.json, .spdx.json, .spdx2.json, or .spdx3.json)", ext)
 	}
 }
 
 // Write outputs info to the given file path. The format is determined by the
-// file extension (.txt, .yml, .csv, .json, .cyclonedx.json, .spdx.json, .spdx2.json, .spdx3.json).
+// file extension (.txt, .yml, .csv, .json, .cyclonedx.json, .cdx.json, .spdx.json, .spdx2.json, .spdx3.json).
 // Format "spdx" (and .spdx.json) means SPDX 2.3 here; use [ResolveFormat] to
 // honour a configured SPDX version.
 // If format is non-empty, it overrides the extension-based detection.

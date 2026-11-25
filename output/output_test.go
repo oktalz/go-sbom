@@ -506,6 +506,15 @@ func TestWriteToFile(t *testing.T) {
 			},
 		},
 		{
+			name: "cdx.json",
+			ext:  ".cdx.json",
+			check: func(t *testing.T, content string) {
+				if !strings.Contains(content, "CycloneDX") {
+					t.Error(".cdx.json file should contain CycloneDX bomFormat")
+				}
+			},
+		},
+		{
 			name: "spdx2.json",
 			ext:  ".spdx2.json",
 			check: func(t *testing.T, content string) {

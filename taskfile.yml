@@ -108,6 +108,7 @@ tasks:
           {{.BIN}} testdata/sbom/edge/go.mod -o {{.OUT}}/edge.{{.ITEM}}.json \
             --licence 'github.com/inc/lib:Company Proprietary' \
             --licence 'github.com/dual/lib:MIT OR Apache-2.0'
+      - "{{.BIN}} go.mod -o {{.OUT}}/repo.cdx.json"
       # .spdx.json follows --spdx-version (default 2)
       - "{{.BIN}} go.mod -o {{.OUT}}/repo-default.spdx.json"
       - "{{.BIN}} go.mod --spdx-version 3 -o {{.OUT}}/repo-v3.spdx.json"
