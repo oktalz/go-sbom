@@ -179,7 +179,7 @@ A license file can contain several licenses: `gopkg.in/yaml.v3` has MIT text for
 go-sbom -f go.mod --licence="company.com/internal/pkg:PROPRIETARY" --licence="company.com/other:MIT"
 ```
 
-Manually assign a license to a package, overriding auto-detection. Can be specified multiple times. Useful for proprietary packages or when auto-detection is incorrect.
+Manually assign a license to a package, overriding auto-detection. Can be specified multiple times. Useful for proprietary packages or when auto-detection is incorrect. For a replaced module, use either its module path or the replacement's path (`corp.example/auth` or `./auth` for `replace corp.example/auth => ./auth`); the license is set on the replacement, which is the code that is built.
 
 #### Exclude packages
 
@@ -187,7 +187,7 @@ Manually assign a license to a package, overriding auto-detection. Can be specif
 go-sbom -f go.mod --check --allowed="MIT,Apache-2.0,BSD-3-Clause" --exclude="company.com/internal/pkg,company.com/proprietary/lib"
 ```
 
-Excluded packages are skipped during license policy checks (used with `--check`) and are never fetched. Patterns use `GOPRIVATE` syntax: `company.com/internal` also matches `company.com/internal/pkg`, and globs such as `*.corp.example.com` are allowed. Output formats always include all packages; like `--allowed`, `--exclude` on the command line or in the environment without `--check` prints a warning.
+Excluded packages are skipped during license policy checks (used with `--check`) and are never fetched. Patterns use `GOPRIVATE` syntax: `company.com/internal` also matches `company.com/internal/pkg`, and globs such as `*.corp.example.com` are allowed. A replaced module is excluded when either its module path or its replacement's path matches. Output formats always include all packages; like `--allowed`, `--exclude` on the command line or in the environment without `--check` prints a warning.
 
 #### Config file
 

@@ -421,3 +421,58 @@ func TestFindViolations(t *testing.T) {
 		t.Errorf("violations = %v, want %v", got, want)
 	}
 }
+
+func replacedDeps() []packages.Package {
+	return []packages.Package{
+		{Path: "github.com/google/uuid", Version: "v1.6.0"},
+		// local replacement: the effective path is a directory
+		{Path: "corp.example/auth", Version: "v0.0.0", Replace: &packages.Package{Path: "./auth"}},
+		// replaced by a fork
+		{Path: "github.com/orig/lib", Version: "v1.0.0", Replace: &packages.Package{Path: "github.com/fork/lib", Version: "v1.2.3"}},
+	}
+}
+
+func TestExcludeDepsMatchesModulePathOfReplaced(t *testing.T) {
+	tests := []struct {
+		pattern string
+		want    []string // remaining module paths
+	}{
+		{"corp.example", []string{"github.com/google/uuid", "github.com/orig/lib"}},
+		{"./auth", []string{"github.com/google/uuid", "github.com/orig/lib"}},
+		{"github.com/orig", []string{"github.com/google/uuid", "corp.example/auth"}},
+		{"github.com/fork/lib", []string{"github.com/google/uuid", "corp.example/auth"}},
+		{"*.example,github.com/orig/lib", []string{"github.com/google/uuid"}},
+	}
+	for _, tt := range tests {
+		info := &packages.Info{Deps: replacedDeps()}
+		excludeDeps(info, tt.pattern)
+		var got []string
+		for _, d := range info.Deps {
+			got = append(got, d.Path)
+		}
+		if !slices.Equal(got, tt.want) {
+			t.Errorf("exclude %q: remaining %v, want %v", tt.pattern, got, tt.want)
+		}
+	}
+}
+
+func TestApplyLicenceOverridesModulePathOfReplaced(t *testing.T) {
+	info := &packages.Info{Deps: replacedDeps()}
+	applyLicenceOverrides(info, []string{"corp.example/auth:LicenseRef-Corp", "github.com/orig/lib:MIT"})
+	if got := info.Deps[1].Replace.License; got != "LicenseRef-Corp" {
+		t.Errorf("local replacement license = %q, want LicenseRef-Corp (set by module path)", got)
+	}
+	if got := info.Deps[2].Replace.License; got != "MIT" {
+		t.Errorf("fork license = %q, want MIT (set by original module path)", got)
+	}
+	if info.Deps[1].License != "" || info.Deps[2].License != "" {
+		t.Error("the license belongs on the replacement, not the original module")
+	}
+
+	// Both paths given: the replacement's path wins.
+	info = &packages.Info{Deps: replacedDeps()}
+	applyLicenceOverrides(info, []string{"github.com/orig/lib:MIT", "github.com/fork/lib:Apache-2.0"})
+	if got := info.Deps[2].Replace.License; got != "Apache-2.0" {
+		t.Errorf("fork license = %q, want Apache-2.0 (replacement path wins)", got)
+	}
+}

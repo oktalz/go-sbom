@@ -155,6 +155,8 @@ func writeJUnit(info *packages.Info, violations []packages.Package, allowed map[
 // patterns. Patterns use GOPRIVATE syntax: a pattern matches a module path
 // and everything below it (company.com/internal matches
 // company.com/internal/pkg) and may contain globs (*.corp.example.com).
+// A replaced module matches by its own path or by its replacement's
+// (corp.example/auth => ./auth matches "corp.example" and "./auth").
 func excludeDeps(info *packages.Info, exclude string) {
 	var patterns []string
 	for e := range strings.SplitSeq(exclude, ",") {
@@ -164,10 +166,14 @@ func excludeDeps(info *packages.Info, exclude string) {
 	}
 	globs := strings.Join(patterns, ",")
 	info.Deps = slices.DeleteFunc(info.Deps, func(dep packages.Package) bool {
-		return module.MatchPrefixPatterns(globs, dep.Effective().Path)
+		return module.MatchPrefixPatterns(globs, dep.Path) || module.MatchPrefixPatterns(globs, dep.Effective().Path)
 	})
 }
 
+// applyLicenceOverrides sets the licenses given as "module:license". The
+// license is set on the module that is built (the replacement of a replaced
+// module), which is matched by the replacement's path or by the original
+// module path; when both are given, the replacement's path wins.
 func applyLicenceOverrides(info *packages.Info, overrides []string) {
 	m := make(map[string]string, len(overrides))
 	for _, o := range overrides {
@@ -182,8 +188,11 @@ func applyLicenceOverrides(info *packages.Info, overrides []string) {
 		info.Main.License = lic
 	}
 	for i := range info.Deps {
-		pkg := info.Deps[i].Effective()
+		dep := &info.Deps[i]
+		pkg := dep.Effective()
 		if lic, ok := m[pkg.Path]; ok {
+			pkg.License = lic
+		} else if lic, ok := m[dep.Path]; ok {
 			pkg.License = lic
 		}
 	}
