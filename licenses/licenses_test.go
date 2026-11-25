@@ -31,6 +31,9 @@ func TestLicenseCandidates(t *testing.T) {
 		{"top-level file beats REUSE", []string{"LICENSE", "LICENSES/MIT.txt"}, []string{"LICENSE"}},
 		{"nested license ignored", []string{"subdir/LICENSE", "main.go"}, nil},
 		{"no license", []string{"main.go", "README.md", "licenses.go.txt/x"}, nil},
+		// github.com/go-openapi/spec has license.go: source, not a license text
+		{"source files named license", []string{"license.go", "license_test.go", "licenses.json"}, nil},
+		{"source file next to a license", []string{"license.go", "LICENSE.code"}, []string{"LICENSE.code"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

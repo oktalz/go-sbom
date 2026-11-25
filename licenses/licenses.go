@@ -198,13 +198,21 @@ func licenseNamePriority(name string) int {
 	return -1
 }
 
+// notLicenseExts are extensions of source and data files: license.go or
+// licenses.json start like a license file name but hold no license text.
+var notLicenseExts = []string{
+	".go", ".s", ".c", ".h", ".cc", ".cpp", ".rs", ".py", ".js", ".ts", ".sh",
+	".json", ".yml", ".yaml", ".toml", ".xml", ".csv", ".proto", ".tmpl", ".tpl", ".html",
+	".mod", ".sum", ".png", ".jpg", ".svg", ".gif",
+}
+
 // isOtherLicenseName reports whether a top-level file that is not in
 // licenseFileNames still looks like a license file (LICENSE.code,
 // LICENSE-APACHE-2.0.txt, COPYING.LIB). Documentation licenses
 // (LICENSE.docs) are skipped: they don't cover the code that is built.
 func isOtherLicenseName(name string) bool {
 	n := strings.ToLower(name)
-	if strings.Contains(n, "doc") {
+	if strings.Contains(n, "doc") || slices.Contains(notLicenseExts, path.Ext(n)) {
 		return false
 	}
 	for _, prefix := range []string{"license", "licence", "copying", "unlicense"} {
