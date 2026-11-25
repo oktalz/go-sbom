@@ -42,14 +42,28 @@ var retryBackoff = time.Second
 
 // Options configures the license detection behavior.
 type Options struct {
+	// module is the module being looked at; verbose lines are prefixed with
+	// it, because modules are processed concurrently and their lines
+	// interleave.
+	module        string
 	MinConfidence float64
 	Verbose       bool
 }
 
+// forModule returns opts for the verbose output about one module.
+func (o Options) forModule(ref string) Options {
+	o.module = ref
+	return o
+}
+
 func logVerbose(opts Options, format string, args ...any) {
-	if opts.Verbose {
-		fmt.Fprintf(os.Stderr, "verbose: "+format+"\n", args...)
+	if !opts.Verbose {
+		return
 	}
+	if opts.module != "" {
+		format = opts.module + ": " + format
+	}
+	fmt.Fprintf(os.Stderr, "verbose: "+format+"\n", args...)
 }
 
 // proxyEntry is one element of GOPROXY.
@@ -258,7 +272,7 @@ func Fetch(ctx context.Context, info *packages.Info, opts Options) error {
 	}
 
 	if info.Dir != "" && info.Main.License == "" {
-		info.Main.License, _, _ = detectDirLicense(classifier, info.Dir, opts)
+		info.Main.License, _, _ = detectDirLicense(classifier, info.Dir, opts.forModule(info.Main.Ref()))
 	}
 
 	env := loadGoEnv()
@@ -268,7 +282,7 @@ func Fetch(ctx context.Context, info *packages.Info, opts Options) error {
 	for i := range info.Deps {
 		pkg := info.Deps[i].Effective()
 		if pkg.License != "" {
-			logVerbose(opts, "license for %s already set to %s, skipping detection", pkg.Path, pkg.License)
+			logVerbose(opts.forModule(pkg.Ref()), "license already set to %s, skipping detection", pkg.License)
 			continue
 		}
 		wg.Go(func() {
@@ -283,7 +297,7 @@ func Fetch(ctx context.Context, info *packages.Info, opts Options) error {
 			depCtx, depCancel := context.WithTimeout(ctx, depTimeout)
 			defer depCancel()
 
-			pkg.License, pkg.LicenseLink = detectLicense(depCtx, classifier, env, info.Dir, pkg, opts)
+			pkg.License, pkg.LicenseLink = detectLicense(depCtx, classifier, env, info.Dir, pkg, opts.forModule(pkg.Ref()))
 		})
 	}
 
@@ -379,7 +393,7 @@ func detectLicense(ctx context.Context, classifier *licenseclassifier.Classifier
 	// A module in the module cache is complete: its license files are there
 	// or nowhere, so there is no point in downloading it again.
 	if dir, ok := modCacheModule(env.ModCache, pkg); ok {
-		logVerbose(opts, "using module cache for %s", pkg.Ref())
+		logVerbose(opts, "using module cache %s", dir)
 		license, file, problem := detectDirLicense(classifier, dir, opts)
 		if license == "" || license == "Unknown" {
 			return unknownLicense(pkg, problem), ""
@@ -393,7 +407,7 @@ func detectLicense(ctx context.Context, classifier *licenseclassifier.Classifier
 		return "Unknown", ""
 	}
 
-	logVerbose(opts, "fetching license for %s@%s", pkg.Path, pkg.Version)
+	logVerbose(opts, "fetching module zip from the proxy")
 
 	zipPath, err := downloadModuleZip(ctx, env.Proxies, pkg.Path, pkg.Version, opts)
 	if err != nil {
@@ -411,7 +425,7 @@ func detectLicense(ctx context.Context, classifier *licenseclassifier.Classifier
 		return unknownLicense(pkg, "no license file found"), ""
 	}
 	for _, f := range files {
-		logVerbose(opts, "found license file %q in %s@%s", f.Name, pkg.Path, pkg.Version)
+		logVerbose(opts, "found license file %s in the module zip", f.Name)
 	}
 	license, problem := classifyFiles(classifier, files, opts)
 	if license == "Unknown" {

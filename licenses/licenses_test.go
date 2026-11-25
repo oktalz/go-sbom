@@ -3,6 +3,7 @@ package licenses
 import (
 	"archive/zip"
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -451,6 +452,45 @@ func TestLicenseFileNamesMap(t *testing.T) {
 	for _, name := range expected {
 		if licenseNamePriority(name) < 0 {
 			t.Errorf("licenseFileNames missing %q", name)
+		}
+	}
+}
+
+// captureStderr returns what fn writes to os.Stderr.
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	orig := os.Stderr
+	os.Stderr = w
+	defer func() { os.Stderr = orig }()
+	fn()
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(out)
+}
+
+func TestVerboseLinesNameTheModule(t *testing.T) {
+	classifier := getClassifier(t)
+	text := []byte(readFixture(t, "mit-and-apache-2.0.txt"))
+	opts := Options{Verbose: true}.forModule("gopkg.in/yaml.v3@v3.0.1")
+
+	out := captureStderr(t, func() { classifyLicense(classifier, text, opts) })
+
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) < 3 { // two matches + the result
+		t.Fatalf("expected verbose output, got %q", out)
+	}
+	for _, line := range lines {
+		if !strings.HasPrefix(line, "verbose: gopkg.in/yaml.v3@v3.0.1: ") {
+			t.Errorf("verbose line without module: %q", line)
 		}
 	}
 }
