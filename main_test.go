@@ -401,3 +401,23 @@ func TestExcludeDepsPrefixAndGlob(t *testing.T) {
 		t.Errorf("remaining deps = %v, want %v", got, want)
 	}
 }
+
+func TestFindViolations(t *testing.T) {
+	deps := []packages.Package{
+		{Path: "a", Version: "v1.0.0", License: "MIT"},
+		{Path: "b", Version: "v1.0.0", License: "MIT AND Apache-2.0"},
+		{Path: "c", Version: "v1.0.0", License: "MIT AND GPL-3.0-only"},
+		{Path: "d", Version: "v1.0.0", License: "GPL-3.0-only OR MIT"},
+		{Path: "e", Version: "v1.0.0", License: "Unknown"},
+		{Path: "f", Version: "v1.0.0", Replace: &packages.Package{Path: "g", Version: "v1.0.0", License: "Apache-2.0"}},
+	}
+	allowed := map[string]bool{"MIT": true, "Apache-2.0": true}
+
+	var got []string
+	for _, v := range findViolations(deps, allowed) {
+		got = append(got, v.Path)
+	}
+	if want := []string{"c", "e"}; !slices.Equal(got, want) {
+		t.Errorf("violations = %v, want %v", got, want)
+	}
+}

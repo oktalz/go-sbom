@@ -157,6 +157,10 @@ go-sbom -f go.mod --check --allowed="MIT,Apache-2.0,BSD-2-Clause,BSD-3-Clause,IS
 ```
 
 The check runs only with `--check`; it writes no SBOM. Exit code is `0` if all licenses are in the allowed list, `2` if any violations are found (`1` is used for usage and input errors).
+
+Licenses are compared case-insensitively, and SPDX expressions are evaluated: `A AND B` needs both licenses allowed, `A OR B` needs at least one, and `A WITH exception` is allowed when `A` is (or when the whole `A WITH exception` is listed). An entry such as `Company Proprietary` is matched as a whole.
+
+A license file can contain several licenses: `gopkg.in/yaml.v3` has MIT text for the code ported from libyaml and Apache-2.0 for the rest, and many modules append the license of vendored code. go-sbom reports every license it finds, joined with `AND` (`MIT AND Apache-2.0`), because it can't tell "all of these apply" from "choose one". For a module that really is dual-licensed, set the expression with `--licence` (e.g. `--licence 'example.com/lib:MIT OR Apache-2.0'`).
 `--allowed` can be given as a comma-separated list, repeated, or as a list in the config file. Without `--check` the allowed list is ignored, so it can live in `.go-sbom.yml` while normal runs keep writing SBOMs (`--allowed` given on the command line or via `GO_SBOM_ALLOWED` without `--check` prints a warning).
 
 #### Set package licenses

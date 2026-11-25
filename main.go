@@ -15,6 +15,7 @@ import (
 	"github.com/oktalz/go-sbom/licenses"
 	"github.com/oktalz/go-sbom/output"
 	"github.com/oktalz/go-sbom/packages"
+	"github.com/oktalz/go-sbom/policy"
 	"github.com/oktalz/go-sbom/version"
 	"github.com/oktalz/junit-report"
 	"golang.org/x/mod/module"
@@ -84,12 +85,7 @@ func main() {
 			allowed[l] = true
 		}
 
-		var violations []packages.Package
-		for _, dep := range info.Deps {
-			if !allowed[dep.Effective().License] {
-				violations = append(violations, dep)
-			}
-		}
+		violations := findViolations(info.Deps, allowed)
 
 		if cfg.JUnitFile != "" {
 			writeJUnit(info, violations, allowed, cfg.JUnitFile)
@@ -115,6 +111,18 @@ func main() {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(exitUsage)
 	}
+}
+
+// findViolations returns the dependencies whose license the policy does not
+// permit (see [policy.Permits] for how expressions are evaluated).
+func findViolations(deps []packages.Package, allowed map[string]bool) []packages.Package {
+	var violations []packages.Package
+	for i := range deps {
+		if !policy.Permits(deps[i].Effective().License, allowed) {
+			violations = append(violations, deps[i])
+		}
+	}
+	return violations
 }
 
 func writeJUnit(info *packages.Info, violations []packages.Package, allowed map[string]bool, junitFile string) {

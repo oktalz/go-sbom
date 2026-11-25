@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -568,30 +569,37 @@ func isLicenseFile(name, prefix string) bool {
 	return licenseNamePriority(rel) >= 0
 }
 
+// classifyLicense returns the license of a license file. A file can hold
+// several licenses (gopkg.in/yaml.v3: MIT for code ported from libyaml,
+// Apache-2.0 for the rest; vendored code under its own license). Every
+// distinct license found is kept, in file order, joined with AND: the
+// classifier can't tell "all of these apply" from "pick one", and AND is the
+// safe reading for a license policy. A real dual license can be pinned with
+// --licence (e.g. "MIT OR Apache-2.0").
 func classifyLicense(classifier *licenseclassifier.Classifier, content []byte, opts Options) string {
-	results := classifier.Match(content)
+	matches := slices.Clone(classifier.Match(content).Matches)
+	slices.SortStableFunc(matches, func(a, b *licenseclassifier.Match) int { return a.StartLine - b.StartLine })
 
-	var best *licenseclassifier.Match
-	for _, m := range results.Matches {
+	var names []string
+	for _, m := range matches {
 		// Skip copyright notice matches — we want actual license types.
 		if m.Name == "Copyright" {
 			continue
 		}
-		logVerbose(opts, "  classifier match: %s (confidence: %.4f)", m.Name, m.Confidence)
-		if best == nil || m.Confidence > best.Confidence {
-			best = m
+		logVerbose(opts, "  classifier match: %s (confidence: %.4f, lines %d-%d)", m.Name, m.Confidence, m.StartLine, m.EndLine)
+		if opts.MinConfidence > 0 && m.Confidence < opts.MinConfidence {
+			logVerbose(opts, "  rejected %s (confidence %.4f < threshold %.4f)", m.Name, m.Confidence, opts.MinConfidence)
+			continue
+		}
+		if !slices.Contains(names, m.Name) {
+			names = append(names, m.Name)
 		}
 	}
 
-	if best == nil {
+	if len(names) == 0 {
 		return "Unknown"
 	}
-
-	if opts.MinConfidence > 0 && best.Confidence < opts.MinConfidence {
-		logVerbose(opts, "  rejected %s (confidence %.4f < threshold %.4f)", best.Name, best.Confidence, opts.MinConfidence)
-		return "Unknown"
-	}
-
-	logVerbose(opts, "  classified as %s (confidence: %.4f)", best.Name, best.Confidence)
-	return best.Name
+	license := strings.Join(names, " AND ")
+	logVerbose(opts, "  classified as %s", license)
+	return license
 }

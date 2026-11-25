@@ -299,6 +299,23 @@ func TestClassifyLicenseApache(t *testing.T) {
 	}
 }
 
+func TestClassifyLicenseMultiple(t *testing.T) {
+	classifier := getClassifier(t)
+
+	// One LICENSE file with two licenses (like gopkg.in/yaml.v3): both are
+	// reported, in file order, joined with AND.
+	text := []byte(readFixture(t, "mit-and-apache-2.0.txt"))
+	if got := classifyLicense(classifier, text, Options{}); got != "MIT AND Apache-2.0" {
+		t.Errorf("classifyLicense(MIT + Apache) = %q, want %q", got, "MIT AND Apache-2.0")
+	}
+
+	// The same license found twice is reported once.
+	twice := []byte(readFixture(t, "mit.txt") + "\n\n" + readFixture(t, "mit.txt"))
+	if got := classifyLicense(classifier, twice, Options{}); got != "MIT" {
+		t.Errorf("classifyLicense(MIT twice) = %q, want %q", got, "MIT")
+	}
+}
+
 func TestClassifyLicenseUnknown(t *testing.T) {
 	classifier := getClassifier(t)
 
