@@ -208,11 +208,12 @@ var notLicenseExts = []string{
 
 // isOtherLicenseName reports whether a top-level file that is not in
 // licenseFileNames still looks like a license file (LICENSE.code,
-// LICENSE-APACHE-2.0.txt, COPYING.LIB). Documentation licenses
-// (LICENSE.docs) are skipped: they don't cover the code that is built.
+// LICENSE-APACHE-2.0.txt, COPYING.LIB). Licenses of documentation and logos
+// (LICENSE.docs, LICENSE-LOGO) are skipped: they don't cover the code that
+// is built.
 func isOtherLicenseName(name string) bool {
 	n := strings.ToLower(name)
-	if strings.Contains(n, "doc") || slices.Contains(notLicenseExts, path.Ext(n)) {
+	if strings.Contains(n, "doc") || strings.Contains(n, "logo") || slices.Contains(notLicenseExts, path.Ext(n)) {
 		return false
 	}
 	for _, prefix := range []string{"license", "licence", "copying", "unlicense"} {
@@ -224,39 +225,42 @@ func isOtherLicenseName(name string) bool {
 }
 
 // licenseCandidates picks the license files to classify among the files of a
-// module (paths relative to the module root, "/"-separated):
+// module (paths relative to the module root, "/"-separated). Their licenses
+// are combined with AND, since a module can come with several:
+// LICENSE-MIT + LICENSE-APACHE, LICENSE + LICENSE.libyaml (gopkg.in/yaml.v2,
+// for ported code), LICENSE + LICENSE-THIRD-PARTY (vendored code).
 //
-//  1. the best-ranked well-known top-level name (licenseFileNames);
-//  2. otherwise every other top-level license-like file (isOtherLicenseName),
-//     e.g. both LICENSE.code and LICENSE.APACHE;
-//  3. otherwise the REUSE layout: every LICENSES/*.txt.
+//  1. every top-level license file: the well-known names (licenseFileNames)
+//     first, in their order of preference, then other license-like names
+//     (isOtherLicenseName) sorted by name;
+//  2. if there is none, the REUSE layout: every LICENSES/*.txt.
+//
+// The first file is the one the license link points to.
 func licenseCandidates(names []string) []string {
-	var best string
-	bestPrio := -1
-	var other, reuse []string
+	var known, other, reuse []string
 	for _, name := range names {
 		dir, base := path.Split(name)
 		switch {
 		case dir == "" && licenseNamePriority(base) >= 0:
-			if p := licenseNamePriority(base); bestPrio < 0 || p < bestPrio {
-				best, bestPrio = name, p
-			}
+			known = append(known, name)
 		case dir == "" && isOtherLicenseName(base):
 			other = append(other, name)
 		case strings.EqualFold(dir, "LICENSES/") && strings.EqualFold(path.Ext(base), ".txt"):
 			reuse = append(reuse, name)
 		}
 	}
-	switch {
-	case best != "":
-		return []string{best}
-	case len(other) > 0:
-		slices.Sort(other)
-		return other
-	default:
-		slices.Sort(reuse)
-		return reuse
+	slices.SortFunc(known, func(a, b string) int {
+		if d := licenseNamePriority(a) - licenseNamePriority(b); d != 0 {
+			return d
+		}
+		return strings.Compare(a, b)
+	})
+	slices.Sort(other)
+	if top := slices.Concat(known, other); len(top) > 0 {
+		return top
 	}
+	slices.Sort(reuse)
+	return reuse
 }
 
 // licenseFile is a license file of a module: its path relative to the module

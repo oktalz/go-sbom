@@ -22,8 +22,10 @@ func TestLicenseCandidates(t *testing.T) {
 		want  []string
 	}{
 		{"well-known name", []string{"main.go", "LICENSE", "README.md"}, []string{"LICENSE"}},
-		{"best well-known name wins", []string{"COPYING", "license.md", "LICENSE-MIT"}, []string{"license.md"}},
-		{"well-known name beats other names", []string{"LICENSE", "LICENSE-THIRD-PARTY"}, []string{"LICENSE"}},
+		{"all well-known names, best first", []string{"COPYING", "license.md", "LICENSE-MIT"}, []string{"license.md", "COPYING", "LICENSE-MIT"}},
+		{"Rust-style dual license", []string{"LICENSE-APACHE", "LICENSE-MIT", "Cargo.toml"}, []string{"LICENSE-MIT", "LICENSE-APACHE"}},
+		{"well-known names, then other names", []string{"LICENSE.libyaml", "LICENSE", "LICENSE-THIRD-PARTY"}, []string{"LICENSE", "LICENSE-THIRD-PARTY", "LICENSE.libyaml"}},
+		{"logo license skipped", []string{"LICENSE", "LICENSE-LOGO"}, []string{"LICENSE"}},
 		{"other names, all of them", []string{"LICENSE.docs", "LICENSE.code", "LICENSE.apache"}, []string{"LICENSE.apache", "LICENSE.code"}},
 		{"other name with SPDX id", []string{"LICENSE-APACHE-2.0.txt", "go.mod"}, []string{"LICENSE-APACHE-2.0.txt"}},
 		{"licence and copying prefixes", []string{"Licence-GPL", "COPYING.LIB"}, []string{"COPYING.LIB", "Licence-GPL"}},

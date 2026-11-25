@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -304,13 +305,17 @@ func TestDirLicenseFilesPriorityAndCase(t *testing.T) {
 	}
 	// Run several times: the result must not depend on iteration order.
 	for range 5 {
-		if files := dirLicenseFiles(dir); len(files) != 1 || files[0].Name != "license.md" {
-			t.Fatalf("dirLicenseFiles = %v, want license.md", files)
+		var got []string
+		for _, f := range dirLicenseFiles(dir) {
+			got = append(got, f.Name)
+		}
+		if want := []string{"license.md", "COPYING", "LICENSE-MIT"}; !slices.Equal(got, want) {
+			t.Fatalf("dirLicenseFiles = %v, want %v", got, want)
 		}
 	}
 }
 
-func TestZipLicenseFilesPrefersLicenseOverCopying(t *testing.T) {
+func TestZipLicenseFilesOrdersLicenseBeforeCopying(t *testing.T) {
 	zipData := createTestZip(t, map[string]string{
 		"m@v1/COPYING":     "copying",
 		"m@v1/License.txt": "license",
@@ -319,8 +324,8 @@ func TestZipLicenseFilesPrefersLicenseOverCopying(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(files) != 1 || files[0].Name != "License.txt" || string(files[0].Content) != "license" {
-		t.Errorf("got %v, want License.txt", files)
+	if len(files) != 2 || files[0].Name != "License.txt" || string(files[0].Content) != "license" || files[1].Name != "COPYING" {
+		t.Errorf("got %v, want License.txt then COPYING", files)
 	}
 }
 
@@ -359,6 +364,13 @@ func TestFetchOtherLicenseNames(t *testing.T) {
 			files:    map[string]string{"LICENSE-APACHE-2.0.txt": apache},
 			license:  "Apache-2.0",
 			linkFile: "LICENSE-APACHE-2.0.txt",
+		},
+		{
+			// Rust-style dual license: the files can't say "OR", so AND
+			name:     "LICENSE-MIT and LICENSE-APACHE",
+			files:    map[string]string{"LICENSE-MIT": testMITText, "LICENSE-APACHE": apache},
+			license:  "MIT AND Apache-2.0",
+			linkFile: "LICENSE-MIT",
 		},
 		{
 			name:     "REUSE LICENSES directory",
