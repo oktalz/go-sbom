@@ -1,0 +1,128 @@
+name: release
+# Push a tag (git tag v0.1.0 && git push origin v0.1.0) to publish a GitHub
+# release with binaries for every platform, an SBOM per binary in CycloneDX,
+# SPDX 2.3 and SPDX 3.0.1, checksums, and signed attestations (build
+# provenance + SBOM) that can be checked with `gh attestation verify`.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: tests and license policy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - uses: go-task/setup-task@v2
+        with:
+          version: 3.x
+      - name: Tests
+        run: task test
+      - name: License policy (.go-sbom.yml)
+        run: task licenses
+
+  build:
+    name: build ${{ matrix.goos }}/${{ matrix.goarch }}
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # Sigstore signing certificate for attestations
+      attestations: write
+    strategy:
+      matrix:
+        goos: [linux, darwin, windows]
+        goarch: [amd64, arm64]
+    env:
+      NAME: go-sbom_${{ github.ref_name }}_${{ matrix.goos }}_${{ matrix.goarch }}${{ matrix.goos == 'windows' && '.exe' || '' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # tags, so go build stamps the version from the tag
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - uses: go-task/setup-task@v2
+        with:
+          version: 3.x
+
+      - name: Build
+        env:
+          CGO_ENABLED: "0"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        # not stripped (-s -w), so `govulncheck -mode binary` works on it
+        run: go build -trimpath -o "dist/$NAME" .
+
+      - name: Check embedded version
+        run: |
+          version=$(go version -m "dist/$NAME" | awk '$1 == "mod" { print $3 }')
+          if [ "$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::binary reports version '$version', expected '$GITHUB_REF_NAME'"
+            exit 1
+          fi
+
+      - name: SBOMs
+        run: |
+          go build -o .tmp/go-sbom .
+          # A binary carries no license text, so take go-sbom's own license
+          # from the checkout (LICENSE next to go.mod).
+          main=$(.tmp/go-sbom go.mod --format json | jq -r '"\(.module):\(.main.license)"')
+          # timestamp from the tagged commit, so the SBOMs are reproducible
+          export SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
+          for format in cyclonedx spdx2 spdx3; do
+            .tmp/go-sbom "dist/$NAME" --licence "$main" -o "dist/$NAME.$format.json"
+          done
+
+      - name: Validate SBOMs against the official schemas
+        run: task sbom-schema -- dist/*.json
+
+      - name: Attest build provenance
+        uses: actions/attest@v4
+        with:
+          subject-path: dist/${{ env.NAME }}
+
+      - name: Attest SBOM
+        # actions/attest reads CycloneDX and SPDX 2.x, not SPDX 3
+        uses: actions/attest@v4
+        with:
+          subject-path: dist/${{ env.NAME }}
+          sbom-path: dist/${{ env.NAME }}.cyclonedx.json
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/
+          if-no-files-found: error
+
+  release:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        working-directory: dist
+        run: sha256sum -- * > checksums.txt
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          flags=()
+          case "$GITHUB_REF_NAME" in *-*) flags+=(--prerelease) ;; esac # v1.0.0-rc.1
+          gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes --title "$GITHUB_REF_NAME" "${flags[@]}" dist/*

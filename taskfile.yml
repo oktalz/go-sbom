@@ -1,0 +1,161 @@
+#https://taskfile.dev/
+version: "3"
+
+vars:
+  # check-go-tool resolves (and if needed installs) each pinned tool built with
+  # the current Go version, and prints its path. `go run` bootstraps it, so no
+  # separate install step is needed.
+  CHECK_GO_TOOL: go run github.com/oktalz/check-go-tool@latest
+  # pinned tools: {{.TOOLS.<name>}}
+  TOOLS:
+    map:
+      betteralign: github.com/dkorunic/betteralign/cmd/betteralign@v0.16.1
+      staticcheck: honnef.co/go/tools/cmd/staticcheck@v0.8.2
+      govulncheck: golang.org/x/vuln/cmd/govulncheck@v1.10.0
+      gofumpt: mvdan.cc/gofumpt@v0.12.0
+      revive: github.com/mgechev/revive@v1.17.1
+      gotestsum: gotest.tools/gotestsum@v1.13.0
+
+dotenv:
+  - .env
+
+# Tool *_BIN vars resolve the binary path with check-go-tool.
+tasks:
+  ci:
+    desc: "do almost all the checks"
+    cmds:
+      - task: tidy
+      - task: format
+      - task: generate
+      - task: lint
+      - task: test
+
+  generate:
+    desc: 'run generation'
+    cmds:
+      - go generate -x ./...
+
+  test:
+    desc: "run Go tests"
+    vars:
+      GOTESTSUM_BIN:
+        sh: "{{.CHECK_GO_TOOL}} {{.TOOLS.gotestsum}}"
+    cmds:
+      - "{{.GOTESTSUM_BIN}} --format-icons=hivis --format=testdox --format-hide-empty-pkg -- -count=1 -v ./..."
+
+  tidy:
+    desc: "run Go mod tidy"
+    cmds:
+      - go mod tidy
+
+  lint:
+    desc: "run Go linters"
+    vars:
+      REVIVE_BIN:
+        sh: "{{.CHECK_GO_TOOL}} {{.TOOLS.revive}}"
+      STATICCHECK_BIN:
+        sh: "{{.CHECK_GO_TOOL}} {{.TOOLS.staticcheck}}"
+      BETTERALIGN_BIN:
+        sh: "{{.CHECK_GO_TOOL}} {{.TOOLS.betteralign}}"
+    cmds:
+      - "{{.REVIVE_BIN}} -config revive.toml -formatter friendly -set_exit_status ./..."
+      - "{{.STATICCHECK_BIN}} ./..."
+      - "{{.BETTERALIGN_BIN}} ./..."
+
+  format:
+    desc: "formats the code"
+    vars:
+      BETTERALIGN_BIN:
+        sh: "{{.CHECK_GO_TOOL}} {{.TOOLS.betteralign}}"
+      GOFUMPT_BIN:
+        sh: "{{.CHECK_GO_TOOL}} {{.TOOLS.gofumpt}}"
+    cmds:
+      - go fix ./...
+      - "{{.BETTERALIGN_BIN}} -apply ./... || true"
+      - "{{.GOFUMPT_BIN}} -l -w ."
+
+  licenses:
+    desc: "check licenses"
+    cmds:
+      # file and allowed licenses come from .go-sbom.yml
+      - go run . --check
+
+  govulncheck:
+    desc: "scan for known vulnerabilities"
+    vars:
+      GOVULNCHECK_BIN:
+        sh: "{{.CHECK_GO_TOOL}} {{.TOOLS.govulncheck}}"
+    cmds:
+      - "{{.GOVULNCHECK_BIN}} -show verbose ./..."
+
+  sbom-validate:
+    desc: "validate generated SBOMs against the official CycloneDX/SPDX schemas (needs python3)"
+    deps:
+      - sbom-validate-venv
+    vars:
+      DIR: .tmp/sbom-validate
+      BIN: .tmp/sbom-validate/go-sbom
+      OUT: .tmp/sbom-validate/out
+    cmds:
+      - go build -o {{.BIN}} .
+      - rm -rf {{.OUT}} && mkdir -p {{.OUT}}
+      # inputs: this repo's go.mod, a binary, and the fixtures in testdata/sbom
+      - for: [cyclonedx, spdx2, spdx3]
+        cmd: |
+          {{.BIN}} go.mod -o {{.OUT}}/repo.{{.ITEM}}.json
+          {{.BIN}} {{.BIN}} -o {{.OUT}}/binary.{{.ITEM}}.json
+          {{.BIN}} testdata/sbom/nodeps/go.mod -o {{.OUT}}/nodeps.{{.ITEM}}.json
+          {{.BIN}} testdata/sbom/edge/go.mod -o {{.OUT}}/edge.{{.ITEM}}.json \
+            --licence 'github.com/inc/lib:Company Proprietary' \
+            --licence 'github.com/dual/lib:MIT OR Apache-2.0'
+      # .spdx.json follows --spdx-version (default 2)
+      - "{{.BIN}} go.mod -o {{.OUT}}/repo-default.spdx.json"
+      - "{{.BIN}} go.mod --spdx-version 3 -o {{.OUT}}/repo-v3.spdx.json"
+      - task: sbom-schema
+        vars:
+          FILES: "{{.OUT}}/*.json"
+
+  sbom-schema:
+    desc: "validate given SBOM files against the official schemas (task sbom-schema -- FILE...)"
+    deps:
+      - sbom-validate-venv
+    vars:
+      FILES: "{{.FILES | default .CLI_ARGS}}"
+    cmds:
+      - .tmp/sbom-validate/venv/bin/python -I hack/sbom-validate/validate.py --cache .tmp/sbom-validate/schemas {{.FILES}}
+
+  sbom-validate-venv:
+    internal: true
+    vars:
+      VENV: .tmp/sbom-validate/venv
+    status:
+      # rebuilt only when requirements.txt changes
+      - cmp -s hack/sbom-validate/requirements.txt {{.VENV}}/requirements.txt
+    cmds:
+      - rm -rf {{.VENV}} && python3 -m venv {{.VENV}}
+      - "{{.VENV}}/bin/pip install --quiet --disable-pip-version-check -r hack/sbom-validate/requirements.txt"
+      - cp hack/sbom-validate/requirements.txt {{.VENV}}/requirements.txt
+
+  legal:
+    desc: "check legal"
+    cmds:
+      - task: govulncheck
+      - task: licenses
+
+  tools-check:
+    desc: 'report pinned go tools that have a newer version (fails if any)'
+    silent: true
+    cmds:
+      # check every tool before failing, so one outdated tool doesn't hide the rest
+      - |
+        status=0
+        for tool in {{range .TOOLS}}{{.}} {{end}}; do
+          {{.CHECK_GO_TOOL}} --check "$tool" || status=1
+        done
+        exit $status
+
+  tools-install:
+    desc: 'install all go tools'
+    cmds:
+      - for: {var: TOOLS}
+        cmd: "{{.CHECK_GO_TOOL}} '{{.ITEM}}' >/dev/null"

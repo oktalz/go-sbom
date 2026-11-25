@@ -1,0 +1,6 @@
+.vscode/numbered-bookmarks.json
+.env
+.tmp/
+.local/
+# release builds (also keeps go build's VCS stamp clean)
+dist/

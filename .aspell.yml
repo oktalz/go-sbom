@@ -1,0 +1,7 @@
+mode: commit
+min_length: 3
+allowed:
+ - SBOM
+ - SPDX
+ - json
+ - cgo

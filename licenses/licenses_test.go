@@ -1,0 +1,446 @@
+package licenses
+
+import (
+	"archive/zip"
+	"bytes"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	licenseclassifier "github.com/google/licenseclassifier/v2"
+	"github.com/google/licenseclassifier/v2/assets"
+	"github.com/oktalz/go-sbom/packages"
+)
+
+func TestIsLicenseFile(t *testing.T) {
+	prefix := "github.com/example/pkg@v1.0.0/"
+
+	tests := []struct {
+		name   string
+		path   string
+		expect bool
+	}{
+		{"LICENSE", prefix + "LICENSE", true},
+		{"LICENSE.md", prefix + "LICENSE.md", true},
+		{"LICENSE.txt", prefix + "LICENSE.txt", true},
+		{"LICENCE", prefix + "LICENCE", true},
+		{"COPYING", prefix + "COPYING", true},
+		{"MIT-LICENSE", prefix + "MIT-LICENSE", true},
+		{"UNLICENSE", prefix + "UNLICENSE", true},
+		{"nested license", prefix + "subdir/LICENSE", false},
+		{"wrong prefix", "other/pkg@v1.0.0/LICENSE", false},
+		{"random file", prefix + "main.go", false},
+		{"README", prefix + "README.md", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isLicenseFile(tt.path, prefix)
+			if got != tt.expect {
+				t.Errorf("isLicenseFile(%q, %q) = %v, want %v", tt.path, prefix, got, tt.expect)
+			}
+		})
+	}
+}
+
+func TestBuildLicenseLink(t *testing.T) {
+	tests := []struct {
+		name       string
+		modulePath string
+		version    string
+		file       string
+		expect     string
+	}{
+		{
+			name:       "github module",
+			modulePath: "github.com/google/uuid",
+			version:    "v1.6.0",
+			file:       "LICENSE",
+			expect:     "https://github.com/google/uuid/blob/v1.6.0/LICENSE",
+		},
+		{
+			name:       "gitlab module",
+			modulePath: "gitlab.com/org/repo",
+			version:    "v1.0.0",
+			file:       "LICENSE",
+			expect:     "https://gitlab.com/org/repo/-/blob/v1.0.0/LICENSE",
+		},
+		{
+			name:       "gitea module",
+			modulePath: "gitea.com/org/repo",
+			version:    "v1.0.0",
+			file:       "LICENSE",
+			expect:     "https://gitea.com/org/repo/src/tag/v1.0.0/LICENSE",
+		},
+		{
+			name:       "codeberg module",
+			modulePath: "codeberg.org/org/repo",
+			version:    "v1.0.0",
+			file:       "LICENSE",
+			expect:     "https://codeberg.org/org/repo/src/tag/v1.0.0/LICENSE",
+		},
+		{
+			name:       "non-github module",
+			modulePath: "golang.org/x/net",
+			version:    "v0.21.0",
+			file:       "LICENSE",
+			expect:     "https://pkg.go.dev/golang.org/x/net@v0.21.0?tab=licenses",
+		},
+		{
+			name:       "empty file",
+			modulePath: "github.com/google/uuid",
+			version:    "v1.6.0",
+			file:       "",
+			expect:     "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := buildLicenseLink(tt.modulePath, tt.version, tt.file)
+			if got != tt.expect {
+				t.Errorf("buildLicenseLink(%q, %q, %q) = %q, want %q",
+					tt.modulePath, tt.version, tt.file, got, tt.expect)
+			}
+		})
+	}
+}
+
+func TestProxyURLs(t *testing.T) {
+	// Save and restore env
+	orig := os.Getenv("GOPROXY")
+	defer os.Setenv("GOPROXY", orig)
+
+	tests := []struct {
+		name    string
+		env     string
+		minURLs int
+	}{
+		{
+			name:    "custom proxy",
+			env:     "https://myproxy.example.com",
+			minURLs: 1,
+		},
+		{
+			name:    "multiple proxies",
+			env:     "https://proxy1.example.com,https://proxy2.example.com,direct",
+			minURLs: 2,
+		},
+		{
+			name:    "with direct",
+			env:     "https://proxy.golang.org,direct",
+			minURLs: 1, // "direct" is included in the list
+		},
+		{
+			name:    "off stops parsing",
+			env:     "https://proxy1.example.com,off,https://proxy2.example.com",
+			minURLs: 1, // only first proxy before "off"
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			os.Setenv("GOPROXY", tt.env)
+			urls := proxyURLs()
+			if len(urls) < tt.minURLs {
+				t.Errorf("proxyURLs() returned %d URLs, want at least %d: %v", len(urls), tt.minURLs, urls)
+			}
+		})
+	}
+}
+
+func TestProxyURLsDefault(t *testing.T) {
+	orig := os.Getenv("GOPROXY")
+	defer os.Setenv("GOPROXY", orig)
+
+	_ = os.Setenv("GOPROXY", "")
+	urls := proxyURLs()
+	// Should fall back to go env or default
+	if len(urls) == 0 {
+		t.Error("proxyURLs() with empty GOPROXY should return at least one URL")
+	}
+}
+
+func createTestZip(t *testing.T, files map[string]string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+
+	for name, content := range files {
+		fw, err := zw.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := fw.Write([]byte(content)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func TestExtractLicenseFromZip(t *testing.T) {
+	modulePath := "github.com/example/pkg"
+	version := "v1.0.0"
+	prefix := modulePath + "@" + version + "/"
+
+	zipData := createTestZip(t, map[string]string{
+		prefix + "main.go":   "package main",
+		prefix + "LICENSE":   "MIT License\n\nPermission is hereby granted...",
+		prefix + "README.md": "# Example",
+	})
+
+	content, fileName, err := extractLicenseFromZip(bytes.NewReader(zipData), int64(len(zipData)), modulePath, version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if content == nil {
+		t.Fatal("expected license content, got nil")
+	}
+	if fileName != "LICENSE" {
+		t.Errorf("fileName = %q, want %q", fileName, "LICENSE")
+	}
+	if !bytes.Contains(content, []byte("MIT License")) {
+		t.Error("license content should contain 'MIT License'")
+	}
+}
+
+func TestExtractLicenseFromZipNoLicense(t *testing.T) {
+	modulePath := "github.com/example/pkg"
+	version := "v1.0.0"
+	prefix := modulePath + "@" + version + "/"
+
+	zipData := createTestZip(t, map[string]string{
+		prefix + "main.go":   "package main",
+		prefix + "README.md": "# No license here",
+	})
+
+	content, fileName, err := extractLicenseFromZip(bytes.NewReader(zipData), int64(len(zipData)), modulePath, version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if content != nil {
+		t.Errorf("expected nil content for zip without license, got %d bytes", len(content))
+	}
+	if fileName != "" {
+		t.Errorf("expected empty fileName, got %q", fileName)
+	}
+}
+
+func TestExtractLicenseFromZipNestedLicense(t *testing.T) {
+	modulePath := "github.com/example/pkg"
+	version := "v1.0.0"
+	prefix := modulePath + "@" + version + "/"
+
+	// Nested license should NOT be found
+	zipData := createTestZip(t, map[string]string{
+		prefix + "main.go":        "package main",
+		prefix + "subpkg/LICENSE": "Some license",
+	})
+
+	content, _, err := extractLicenseFromZip(bytes.NewReader(zipData), int64(len(zipData)), modulePath, version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if content != nil {
+		t.Error("nested LICENSE should not be extracted")
+	}
+}
+
+func TestExtractLicenseFromZipInvalidData(t *testing.T) {
+	_, _, err := extractLicenseFromZip(strings.NewReader("not a zip"), int64(len("not a zip")), "mod", "v1")
+	if err == nil {
+		t.Fatal("expected error for invalid zip data")
+	}
+}
+
+// readFixture returns the content of testdata/name.
+func readFixture(t *testing.T, name string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("testdata", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
+func getClassifier(t *testing.T) *licenseclassifier.Classifier {
+	t.Helper()
+	c, err := assets.DefaultClassifier()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+func TestClassifyLicenseMIT(t *testing.T) {
+	classifier := getClassifier(t)
+
+	mitText := readFixture(t, "mit.txt")
+
+	result := classifyLicense(classifier, []byte(mitText), Options{})
+	if result != "MIT" {
+		t.Errorf("classifyLicense(MIT) = %q, want %q", result, "MIT")
+	}
+}
+
+func TestClassifyLicenseApache(t *testing.T) {
+	classifier := getClassifier(t)
+
+	apacheText := readFixture(t, "apache-2.0.txt")
+
+	result := classifyLicense(classifier, []byte(apacheText), Options{})
+	if result != "Apache-2.0" {
+		t.Errorf("classifyLicense(Apache) = %q, want %q", result, "Apache-2.0")
+	}
+}
+
+func TestClassifyLicenseUnknown(t *testing.T) {
+	classifier := getClassifier(t)
+
+	result := classifyLicense(classifier, []byte("This is not a license text at all."), Options{})
+	if result != "Unknown" {
+		t.Errorf("classifyLicense(garbage) = %q, want %q", result, "Unknown")
+	}
+}
+
+func TestClassifyLicenseEmpty(t *testing.T) {
+	classifier := getClassifier(t)
+
+	result := classifyLicense(classifier, []byte(""), Options{})
+	if result != "Unknown" {
+		t.Errorf("classifyLicense(empty) = %q, want %q", result, "Unknown")
+	}
+}
+
+func TestClassifyLicenseMinConfidence(t *testing.T) {
+	classifier := getClassifier(t)
+
+	mitText := readFixture(t, "mit.txt")
+
+	// With very high threshold, should reject even a perfect match
+	result := classifyLicense(classifier, []byte(mitText), Options{MinConfidence: 1.01})
+	if result != "Unknown" {
+		t.Errorf("classifyLicense with impossible threshold = %q, want %q", result, "Unknown")
+	}
+
+	// With zero threshold (default), should classify normally
+	result = classifyLicense(classifier, []byte(mitText), Options{MinConfidence: 0})
+	if result != "MIT" {
+		t.Errorf("classifyLicense with zero threshold = %q, want %q", result, "MIT")
+	}
+}
+
+func TestDetectLocalLicense(t *testing.T) {
+	classifier := getClassifier(t)
+	dir := t.TempDir()
+
+	mitText := readFixture(t, "mit.txt")
+
+	if err := os.WriteFile(filepath.Join(dir, "LICENSE"), []byte(mitText), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result := detectLocalLicense(classifier, dir, Options{})
+	if result != "MIT" {
+		t.Errorf("detectLocalLicense = %q, want %q", result, "MIT")
+	}
+}
+
+func TestDetectLocalLicenseNoFile(t *testing.T) {
+	classifier := getClassifier(t)
+	dir := t.TempDir()
+
+	result := detectLocalLicense(classifier, dir, Options{})
+	if result != "" {
+		t.Errorf("detectLocalLicense(no file) = %q, want empty", result)
+	}
+}
+
+func TestDetectLocalLicenseAlternateNames(t *testing.T) {
+	classifier := getClassifier(t)
+
+	mitText := readFixture(t, "mit.txt")
+
+	names := []string{"LICENCE", "LICENSE.md", "LICENSE.txt", "COPYING", "MIT-LICENSE"}
+
+	for _, name := range names {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, name), []byte(mitText), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			result := detectLocalLicense(classifier, dir, Options{})
+			if result == "" {
+				t.Errorf("detectLocalLicense with %s returned empty", name)
+			}
+		})
+	}
+}
+
+func TestFetchSetsLocalLicense(t *testing.T) {
+	dir := t.TempDir()
+
+	mitText := readFixture(t, "mit.txt")
+
+	if err := os.WriteFile(filepath.Join(dir, "LICENSE"), []byte(mitText), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	info := &packages.Info{
+		Dir: dir,
+		Main: packages.Package{
+			Path: "github.com/example/testmod",
+		},
+		Deps: nil, // no deps to avoid network calls
+	}
+
+	ctx := t.Context()
+	if err := Fetch(ctx, info, Options{}); err != nil {
+		t.Fatal(err)
+	}
+
+	if info.Main.License != "MIT" {
+		t.Errorf("Main.License = %q, want %q", info.Main.License, "MIT")
+	}
+}
+
+func TestFetchNoDirSkipsLocalLicense(t *testing.T) {
+	info := &packages.Info{
+		Dir: "", // no dir
+		Main: packages.Package{
+			Path: "github.com/example/testmod",
+		},
+		Deps: nil,
+	}
+
+	ctx := t.Context()
+	if err := Fetch(ctx, info, Options{}); err != nil {
+		t.Fatal(err)
+	}
+
+	if info.Main.License != "" {
+		t.Errorf("Main.License should be empty when Dir is empty, got %q", info.Main.License)
+	}
+}
+
+func TestLicenseFileNamesMap(t *testing.T) {
+	expected := []string{
+		"LICENSE", "LICENSE.md", "LICENSE.txt", "LICENSE.markdown",
+		"LICENCE", "LICENCE.md", "LICENCE.txt",
+		"COPYING", "COPYING.md", "COPYING.txt",
+		"LICENSE-MIT", "LICENSE-APACHE", "LICENSE-2.0.txt",
+		"MIT-LICENSE", "LICENSE.MIT", "LICENSE.rst", "UNLICENSE",
+	}
+
+	for _, name := range expected {
+		if licenseNamePriority(name) < 0 {
+			t.Errorf("licenseFileNames missing %q", name)
+		}
+	}
+}

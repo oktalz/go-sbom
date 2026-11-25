@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-labelledby="title">
+  <title id="title">go-sbom gopher holding a security shield</title>
+  <g stroke="#1a1a1a" stroke-width="4" stroke-linejoin="round" stroke-linecap="round">
+    <!-- feet -->
+    <ellipse cx="96" cy="238" rx="20" ry="10" fill="#f6d2a2"/>
+    <ellipse cx="160" cy="238" rx="20" ry="10" fill="#f6d2a2"/>
+    <!-- ears -->
+    <circle cx="70" cy="44" r="15" fill="#6ad7e5"/>
+    <circle cx="186" cy="44" r="15" fill="#6ad7e5"/>
+    <circle cx="70" cy="44" r="6" fill="#4bb8c8" stroke="none"/>
+    <circle cx="186" cy="44" r="6" fill="#4bb8c8" stroke="none"/>
+    <!-- body -->
+    <path d="M128 22 C 186 22 208 62 208 118 L 208 196 C 208 226 176 238 128 238 C 80 238 48 226 48 196 L 48 118 C 48 62 70 22 128 22 Z" fill="#6ad7e5"/>
+    <!-- eyes -->
+    <circle cx="96" cy="78" r="24" fill="#fff"/>
+    <circle cx="160" cy="78" r="24" fill="#fff"/>
+    <circle cx="103" cy="82" r="9" fill="#1a1a1a" stroke="none"/>
+    <circle cx="153" cy="82" r="9" fill="#1a1a1a" stroke="none"/>
+    <circle cx="106" cy="78" r="3" fill="#fff" stroke="none"/>
+    <circle cx="156" cy="78" r="3" fill="#fff" stroke="none"/>
+    <!-- muzzle, nose, teeth -->
+    <rect x="120" y="114" width="16" height="16" rx="3" fill="#fff" stroke-width="3"/>
+    <line x1="128" y1="114" x2="128" y2="130" stroke-width="2.5"/>
+    <ellipse cx="128" cy="108" rx="22" ry="13" fill="#f6d2a2"/>
+    <ellipse cx="128" cy="101" rx="10" ry="6" fill="#1a1a1a"/>
+    <!-- shield -->
+    <path d="M128 136 L 180 152 L 180 182 C 180 208 158 226 128 236 C 98 226 76 208 76 182 L 76 152 Z" fill="#2b4c7e"/>
+    <path d="M128 147 L 170 160 L 170 183 C 170 202 153 216 128 225 C 103 216 86 202 86 183 L 86 160 Z" fill="#3d6cb0" stroke="none"/>
+    <!-- check mark: the verified bill of materials -->
+    <polyline points="106,184 122,200 152,168" fill="none" stroke="#fff" stroke-width="10"/>
+    <!-- hands holding the shield -->
+    <ellipse cx="76" cy="178" rx="11" ry="15" fill="#f6d2a2" transform="rotate(-20 76 178)"/>
+    <ellipse cx="180" cy="178" rx="11" ry="15" fill="#f6d2a2" transform="rotate(20 180 178)"/>
+  </g>
+</svg>
