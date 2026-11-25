@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -13,32 +14,27 @@ import (
 	"github.com/oktalz/go-sbom/packages"
 )
 
-func TestIsLicenseFile(t *testing.T) {
-	prefix := "github.com/example/pkg@v1.0.0/"
-
+func TestLicenseCandidates(t *testing.T) {
 	tests := []struct {
-		name   string
-		path   string
-		expect bool
+		name  string
+		files []string
+		want  []string
 	}{
-		{"LICENSE", prefix + "LICENSE", true},
-		{"LICENSE.md", prefix + "LICENSE.md", true},
-		{"LICENSE.txt", prefix + "LICENSE.txt", true},
-		{"LICENCE", prefix + "LICENCE", true},
-		{"COPYING", prefix + "COPYING", true},
-		{"MIT-LICENSE", prefix + "MIT-LICENSE", true},
-		{"UNLICENSE", prefix + "UNLICENSE", true},
-		{"nested license", prefix + "subdir/LICENSE", false},
-		{"wrong prefix", "other/pkg@v1.0.0/LICENSE", false},
-		{"random file", prefix + "main.go", false},
-		{"README", prefix + "README.md", false},
+		{"well-known name", []string{"main.go", "LICENSE", "README.md"}, []string{"LICENSE"}},
+		{"best well-known name wins", []string{"COPYING", "license.md", "LICENSE-MIT"}, []string{"license.md"}},
+		{"well-known name beats other names", []string{"LICENSE", "LICENSE-THIRD-PARTY"}, []string{"LICENSE"}},
+		{"other names, all of them", []string{"LICENSE.docs", "LICENSE.code", "LICENSE.apache"}, []string{"LICENSE.apache", "LICENSE.code"}},
+		{"other name with SPDX id", []string{"LICENSE-APACHE-2.0.txt", "go.mod"}, []string{"LICENSE-APACHE-2.0.txt"}},
+		{"licence and copying prefixes", []string{"Licence-GPL", "COPYING.LIB"}, []string{"COPYING.LIB", "Licence-GPL"}},
+		{"REUSE directory", []string{"go.mod", "LICENSES/MIT.txt", "LICENSES/Apache-2.0.txt", "LICENSES/README.md"}, []string{"LICENSES/Apache-2.0.txt", "LICENSES/MIT.txt"}},
+		{"top-level file beats REUSE", []string{"LICENSE", "LICENSES/MIT.txt"}, []string{"LICENSE"}},
+		{"nested license ignored", []string{"subdir/LICENSE", "main.go"}, nil},
+		{"no license", []string{"main.go", "README.md", "licenses.go.txt/x"}, nil},
 	}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := isLicenseFile(tt.path, prefix)
-			if got != tt.expect {
-				t.Errorf("isLicenseFile(%q, %q) = %v, want %v", tt.path, prefix, got, tt.expect)
+			if got := licenseCandidates(tt.files); !slices.Equal(got, tt.want) {
+				t.Errorf("licenseCandidates(%q) = %q, want %q", tt.files, got, tt.want)
 			}
 		})
 	}
@@ -183,7 +179,7 @@ func createTestZip(t *testing.T, files map[string]string) []byte {
 	return buf.Bytes()
 }
 
-func TestExtractLicenseFromZip(t *testing.T) {
+func TestZipLicenseFiles(t *testing.T) {
 	modulePath := "github.com/example/pkg"
 	version := "v1.0.0"
 	prefix := modulePath + "@" + version + "/"
@@ -194,22 +190,22 @@ func TestExtractLicenseFromZip(t *testing.T) {
 		prefix + "README.md": "# Example",
 	})
 
-	content, fileName, err := extractLicenseFromZip(bytes.NewReader(zipData), int64(len(zipData)), modulePath, version)
+	files, err := zipLicenseFiles(bytes.NewReader(zipData), int64(len(zipData)), modulePath, version)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if content == nil {
-		t.Fatal("expected license content, got nil")
+	if len(files) != 1 {
+		t.Fatalf("got %d license files, want 1", len(files))
 	}
-	if fileName != "LICENSE" {
-		t.Errorf("fileName = %q, want %q", fileName, "LICENSE")
+	if files[0].Name != "LICENSE" {
+		t.Errorf("fileName = %q, want %q", files[0].Name, "LICENSE")
 	}
-	if !bytes.Contains(content, []byte("MIT License")) {
+	if !bytes.Contains(files[0].Content, []byte("MIT License")) {
 		t.Error("license content should contain 'MIT License'")
 	}
 }
 
-func TestExtractLicenseFromZipNoLicense(t *testing.T) {
+func TestZipLicenseFilesNoLicense(t *testing.T) {
 	modulePath := "github.com/example/pkg"
 	version := "v1.0.0"
 	prefix := modulePath + "@" + version + "/"
@@ -219,19 +215,16 @@ func TestExtractLicenseFromZipNoLicense(t *testing.T) {
 		prefix + "README.md": "# No license here",
 	})
 
-	content, fileName, err := extractLicenseFromZip(bytes.NewReader(zipData), int64(len(zipData)), modulePath, version)
+	files, err := zipLicenseFiles(bytes.NewReader(zipData), int64(len(zipData)), modulePath, version)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if content != nil {
-		t.Errorf("expected nil content for zip without license, got %d bytes", len(content))
-	}
-	if fileName != "" {
-		t.Errorf("expected empty fileName, got %q", fileName)
+	if len(files) != 0 {
+		t.Errorf("expected no license files, got %d", len(files))
 	}
 }
 
-func TestExtractLicenseFromZipNestedLicense(t *testing.T) {
+func TestZipLicenseFilesNestedLicense(t *testing.T) {
 	modulePath := "github.com/example/pkg"
 	version := "v1.0.0"
 	prefix := modulePath + "@" + version + "/"
@@ -242,17 +235,17 @@ func TestExtractLicenseFromZipNestedLicense(t *testing.T) {
 		prefix + "subpkg/LICENSE": "Some license",
 	})
 
-	content, _, err := extractLicenseFromZip(bytes.NewReader(zipData), int64(len(zipData)), modulePath, version)
+	files, err := zipLicenseFiles(bytes.NewReader(zipData), int64(len(zipData)), modulePath, version)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if content != nil {
+	if len(files) != 0 {
 		t.Error("nested LICENSE should not be extracted")
 	}
 }
 
-func TestExtractLicenseFromZipInvalidData(t *testing.T) {
-	_, _, err := extractLicenseFromZip(strings.NewReader("not a zip"), int64(len("not a zip")), "mod", "v1")
+func TestZipLicenseFilesInvalidData(t *testing.T) {
+	_, err := zipLicenseFiles(strings.NewReader("not a zip"), int64(len("not a zip")), "mod", "v1")
 	if err == nil {
 		t.Fatal("expected error for invalid zip data")
 	}

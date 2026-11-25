@@ -295,7 +295,7 @@ func TestFetchLocalReplace(t *testing.T) {
 	}
 }
 
-func TestFindLicenseFilePriorityAndCase(t *testing.T) {
+func TestDirLicenseFilesPriorityAndCase(t *testing.T) {
 	dir := t.TempDir()
 	for _, name := range []string{"COPYING", "license.md", "LICENSE-MIT", "README.md"} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o644); err != nil {
@@ -304,22 +304,136 @@ func TestFindLicenseFilePriorityAndCase(t *testing.T) {
 	}
 	// Run several times: the result must not depend on iteration order.
 	for range 5 {
-		if got := findLicenseFile(dir); got != "license.md" {
-			t.Fatalf("findLicenseFile = %q, want license.md", got)
+		if files := dirLicenseFiles(dir); len(files) != 1 || files[0].Name != "license.md" {
+			t.Fatalf("dirLicenseFiles = %v, want license.md", files)
 		}
 	}
 }
 
-func TestExtractLicenseFromZipPrefersLicenseOverCopying(t *testing.T) {
+func TestZipLicenseFilesPrefersLicenseOverCopying(t *testing.T) {
 	zipData := createTestZip(t, map[string]string{
 		"m@v1/COPYING":     "copying",
 		"m@v1/License.txt": "license",
 	})
-	content, name, err := extractLicenseFromZip(strings.NewReader(string(zipData)), int64(len(zipData)), "m", "v1")
+	files, err := zipLicenseFiles(strings.NewReader(string(zipData)), int64(len(zipData)), "m", "v1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if name != "License.txt" || string(content) != "license" {
-		t.Errorf("got %q (%q), want License.txt", name, content)
+	if len(files) != 1 || files[0].Name != "License.txt" || string(files[0].Content) != "license" {
+		t.Errorf("got %v, want License.txt", files)
+	}
+}
+
+// zipFilesHandler serves a module zip with the given files (relative to the
+// module root).
+func zipFilesHandler(t *testing.T, modulePath, version string, files map[string]string) http.HandlerFunc {
+	t.Helper()
+	entries := make(map[string]string, len(files))
+	for name, content := range files {
+		entries[modulePath+"@"+version+"/"+name] = content
+	}
+	data := createTestZip(t, entries)
+	return func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(data)
+	}
+}
+
+func TestFetchOtherLicenseNames(t *testing.T) {
+	apache := readFixture(t, "apache-2.0.txt")
+	tests := []struct {
+		name     string
+		files    map[string]string
+		license  string
+		linkFile string
+	}{
+		{
+			// github.com/spdx/tools-golang: the docs license doesn't cover the code
+			name:     "LICENSE.code and LICENSE.docs",
+			files:    map[string]string{"LICENSE.code": testMITText, "LICENSE.docs": apache, "go.mod": "module m"},
+			license:  "MIT",
+			linkFile: "LICENSE.code",
+		},
+		{
+			// github.com/xeipuuv/gojsonpointer
+			name:     "LICENSE-APACHE-2.0.txt",
+			files:    map[string]string{"LICENSE-APACHE-2.0.txt": apache},
+			license:  "Apache-2.0",
+			linkFile: "LICENSE-APACHE-2.0.txt",
+		},
+		{
+			name:     "REUSE LICENSES directory",
+			files:    map[string]string{"LICENSES/MIT.txt": testMITText, "LICENSES/Apache-2.0.txt": apache},
+			license:  "Apache-2.0 AND MIT",
+			linkFile: "LICENSES/Apache-2.0.txt",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := httptest.NewServer(zipFilesHandler(t, "github.com/a/b", "v1.0.0", tt.files))
+			defer s.Close()
+			isolateGoEnv(t, s.URL)
+
+			info := &packages.Info{Deps: []packages.Package{{Path: "github.com/a/b", Version: "v1.0.0"}}}
+			if err := Fetch(t.Context(), info, Options{}); err != nil {
+				t.Fatal(err)
+			}
+			if got := info.Deps[0].License; got != tt.license {
+				t.Errorf("License = %q, want %q", got, tt.license)
+			}
+			if want := "https://github.com/a/b/blob/v1.0.0/" + tt.linkFile; info.Deps[0].LicenseLink != want {
+				t.Errorf("LicenseLink = %q, want %q", info.Deps[0].LicenseLink, want)
+			}
+		})
+	}
+}
+
+func TestFetchModuleCacheWithoutLicenseIsNotDownloaded(t *testing.T) {
+	cache := isolateGoEnv(t, failingProxy(t).URL)
+	dir := filepath.Join(cache, "example.com", "nolicense@v1.0.0")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/nolicense"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	info := &packages.Info{Deps: []packages.Package{{Path: "example.com/nolicense", Version: "v1.0.0"}}}
+	if err := Fetch(t.Context(), info, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Deps[0].License; got != "Unknown" {
+		t.Errorf("License = %q, want Unknown", got)
+	}
+}
+
+func TestDetectDirLicenseProblem(t *testing.T) {
+	classifier := getClassifier(t)
+	write := func(t *testing.T, name, content string) string {
+		t.Helper()
+		dir := t.TempDir()
+		if name != "" {
+			if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return dir
+	}
+	tests := []struct {
+		name, file, content string
+		opts                Options
+		license, problem    string
+	}{
+		{name: "no file", license: "", problem: "no license file found"},
+		{name: "not recognised", file: "LICENSE", content: "All rights reserved, ask us.", license: "Unknown", problem: "license file LICENSE not recognised by the classifier"},
+		{name: "below threshold", file: "LICENSE", content: testMITText, opts: Options{MinConfidence: 1.01}, license: "Unknown", problem: "license in LICENSE is below --min-confidence 1.01"},
+		{name: "recognised", file: "LICENSE", content: testMITText, license: "MIT"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			license, _, problem := detectDirLicense(classifier, write(t, tt.file, tt.content), tt.opts)
+			if license != tt.license || problem != tt.problem {
+				t.Errorf("detectDirLicense = (%q, %q), want (%q, %q)", license, problem, tt.license, tt.problem)
+			}
+		})
 	}
 }

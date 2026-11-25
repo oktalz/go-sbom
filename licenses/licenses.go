@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -183,6 +184,66 @@ func licenseNamePriority(name string) int {
 	return -1
 }
 
+// isOtherLicenseName reports whether a top-level file that is not in
+// licenseFileNames still looks like a license file (LICENSE.code,
+// LICENSE-APACHE-2.0.txt, COPYING.LIB). Documentation licenses
+// (LICENSE.docs) are skipped: they don't cover the code that is built.
+func isOtherLicenseName(name string) bool {
+	n := strings.ToLower(name)
+	if strings.Contains(n, "doc") {
+		return false
+	}
+	for _, prefix := range []string{"license", "licence", "copying", "unlicense"} {
+		if strings.HasPrefix(n, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// licenseCandidates picks the license files to classify among the files of a
+// module (paths relative to the module root, "/"-separated):
+//
+//  1. the best-ranked well-known top-level name (licenseFileNames);
+//  2. otherwise every other top-level license-like file (isOtherLicenseName),
+//     e.g. both LICENSE.code and LICENSE.APACHE;
+//  3. otherwise the REUSE layout: every LICENSES/*.txt.
+func licenseCandidates(names []string) []string {
+	var best string
+	bestPrio := -1
+	var other, reuse []string
+	for _, name := range names {
+		dir, base := path.Split(name)
+		switch {
+		case dir == "" && licenseNamePriority(base) >= 0:
+			if p := licenseNamePriority(base); bestPrio < 0 || p < bestPrio {
+				best, bestPrio = name, p
+			}
+		case dir == "" && isOtherLicenseName(base):
+			other = append(other, name)
+		case strings.EqualFold(dir, "LICENSES/") && strings.EqualFold(path.Ext(base), ".txt"):
+			reuse = append(reuse, name)
+		}
+	}
+	switch {
+	case best != "":
+		return []string{best}
+	case len(other) > 0:
+		slices.Sort(other)
+		return other
+	default:
+		slices.Sort(reuse)
+		return reuse
+	}
+}
+
+// licenseFile is a license file of a module: its path relative to the module
+// root and its content (at most maxLicenseFileSize bytes).
+type licenseFile struct {
+	Name    string
+	Content []byte
+}
+
 // Fetch populates the License field of every package that does not have one
 // yet (packages with a --licence override are left alone).
 // Licenses are looked up, in order: in local replacement directories, in the
@@ -197,7 +258,7 @@ func Fetch(ctx context.Context, info *packages.Info, opts Options) error {
 	}
 
 	if info.Dir != "" && info.Main.License == "" {
-		info.Main.License, _ = detectDirLicense(classifier, info.Dir, opts)
+		info.Main.License, _, _ = detectDirLicense(classifier, info.Dir, opts)
 	}
 
 	env := loadGoEnv()
@@ -233,53 +294,73 @@ func Fetch(ctx context.Context, info *packages.Info, opts Options) error {
 // detectLocalLicense returns the license of the license file in dir, or ""
 // when there is none.
 func detectLocalLicense(classifier *licenseclassifier.Classifier, dir string, opts Options) string {
-	license, _ := detectDirLicense(classifier, dir, opts)
+	license, _, _ := detectDirLicense(classifier, dir, opts)
 	return license
 }
 
-// detectDirLicense classifies the preferred license file in dir. It returns
-// the license and the file name, or two empty strings when there is no
-// license file.
-func detectDirLicense(classifier *licenseclassifier.Classifier, dir string, opts Options) (license, file string) {
-	name := findLicenseFile(dir)
-	if name == "" {
-		return "", ""
+// detectDirLicense classifies the license files in dir (see
+// licenseCandidates). It returns the license, the first license file and,
+// for an Unknown license, the reason. license is "" when dir has no license
+// file.
+func detectDirLicense(classifier *licenseclassifier.Classifier, dir string, opts Options) (license, file, problem string) {
+	files := dirLicenseFiles(dir)
+	if len(files) == 0 {
+		return "", "", "no license file found"
 	}
-	data, err := readLimited(filepath.Join(dir, name))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "warning: reading %s: %v\n", filepath.Join(dir, name), err)
-		return "", ""
+	for _, f := range files {
+		logVerbose(opts, "found license file: %s", filepath.Join(dir, filepath.FromSlash(f.Name)))
 	}
-	logVerbose(opts, "found license file: %s", filepath.Join(dir, name))
-	return classifyLicense(classifier, data, opts), name
+	license, problem = classifyFiles(classifier, files, opts)
+	return license, files[0].Name, problem
 }
 
-// findLicenseFile returns the best-ranked license file name in dir, or "".
-func findLicenseFile(dir string) string {
+// dirLicenseFiles reads the license files of the module in dir.
+func dirLicenseFiles(dir string) []licenseFile {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return ""
+		return nil
 	}
-	best, bestPrio := "", -1
+	var names []string
 	for _, e := range entries {
-		if e.IsDir() {
+		switch {
+		case !e.IsDir():
+			names = append(names, e.Name())
+		case strings.EqualFold(e.Name(), "LICENSES"):
+			sub, _ := os.ReadDir(filepath.Join(dir, e.Name()))
+			for _, f := range sub {
+				if !f.IsDir() {
+					names = append(names, e.Name()+"/"+f.Name())
+				}
+			}
+		}
+	}
+	var files []licenseFile
+	for _, name := range licenseCandidates(names) {
+		full := filepath.Join(dir, filepath.FromSlash(name))
+		data, err := readLimited(full)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "warning: reading %s: %v\n", full, err)
 			continue
 		}
-		p := licenseNamePriority(e.Name())
-		if p >= 0 && (bestPrio < 0 || p < bestPrio) {
-			best, bestPrio = e.Name(), p
-		}
+		files = append(files, licenseFile{Name: name, Content: data})
 	}
-	return best
+	return files
 }
 
-func readLimited(path string) ([]byte, error) {
-	f, err := os.Open(path)
+func readLimited(file string) ([]byte, error) {
+	f, err := os.Open(file)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
 	return io.ReadAll(io.LimitReader(f, maxLicenseFileSize))
+}
+
+// unknownLicense prints why the license of pkg could not be determined and
+// returns "Unknown".
+func unknownLicense(pkg *packages.Package, problem string) string {
+	fmt.Fprintf(os.Stderr, "warning: %s: %s; set its license with --licence\n", pkg.Ref(), problem)
+	return "Unknown"
 }
 
 func detectLicense(ctx context.Context, classifier *licenseclassifier.Classifier, env goEnv, baseDir string, pkg *packages.Package, opts Options) (license, link string) {
@@ -288,15 +369,21 @@ func detectLicense(ctx context.Context, classifier *licenseclassifier.Classifier
 		if !filepath.IsAbs(dir) && baseDir != "" {
 			dir = filepath.Join(baseDir, dir)
 		}
-		license, _ = detectDirLicense(classifier, dir, opts)
-		if license == "" {
-			fmt.Fprintf(os.Stderr, "warning: no license file found in local replacement %s\n", dir)
-			return "Unknown", ""
+		license, _, problem := detectDirLicense(classifier, dir, opts)
+		if license == "" || license == "Unknown" {
+			return unknownLicense(pkg, problem+" in local replacement "+dir), ""
 		}
 		return license, ""
 	}
 
-	if license, file := detectModCacheLicense(classifier, env.ModCache, pkg, opts); file != "" {
+	// A module in the module cache is complete: its license files are there
+	// or nowhere, so there is no point in downloading it again.
+	if dir, ok := modCacheModule(env.ModCache, pkg); ok {
+		logVerbose(opts, "using module cache for %s", pkg.Ref())
+		license, file, problem := detectDirLicense(classifier, dir, opts)
+		if license == "" || license == "Unknown" {
+			return unknownLicense(pkg, problem), ""
+		}
 		return license, buildLicenseLink(pkg.Path, pkg.Version, file)
 	}
 
@@ -315,20 +402,22 @@ func detectLicense(ctx context.Context, classifier *licenseclassifier.Classifier
 	}
 	defer os.Remove(zipPath)
 
-	content, licenseFile, err := extractLicenseFromZipFile(zipPath, pkg.Path, pkg.Version)
+	files, err := zipLicenseFilesFromPath(zipPath, pkg.Path, pkg.Version)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: reading license for %s@%s: %v\n", pkg.Path, pkg.Version, err)
 		return "Unknown", ""
 	}
-	if content == nil {
-		logVerbose(opts, "no license file found in %s@%s", pkg.Path, pkg.Version)
-		return "Unknown", ""
+	if len(files) == 0 {
+		return unknownLicense(pkg, "no license file found"), ""
 	}
-
-	logVerbose(opts, "found license file %q in %s@%s", licenseFile, pkg.Path, pkg.Version)
-	license = classifyLicense(classifier, content, opts)
-	link = buildLicenseLink(pkg.Path, pkg.Version, licenseFile)
-	return license, link
+	for _, f := range files {
+		logVerbose(opts, "found license file %q in %s@%s", f.Name, pkg.Path, pkg.Version)
+	}
+	license, problem := classifyFiles(classifier, files, opts)
+	if license == "Unknown" {
+		return unknownLicense(pkg, problem), ""
+	}
+	return license, buildLicenseLink(pkg.Path, pkg.Version, files[0].Name)
 }
 
 // modCacheDir returns the extracted module directory in the module cache.
@@ -347,18 +436,17 @@ func modCacheDir(modCache, modulePath, version string) (string, error) {
 	return filepath.Join(modCache, filepath.FromSlash(escPath)+"@"+escVersion), nil
 }
 
-// detectModCacheLicense looks for the module in the local module cache.
-// file is empty when the module or its license file is not there.
-func detectModCacheLicense(classifier *licenseclassifier.Classifier, modCache string, pkg *packages.Package, opts Options) (license, file string) {
+// modCacheModule returns the module's directory in the module cache, if it
+// has been extracted there.
+func modCacheModule(modCache string, pkg *packages.Package) (string, bool) {
 	dir, err := modCacheDir(modCache, pkg.Path, pkg.Version)
 	if err != nil {
-		return "", ""
+		return "", false
 	}
-	if _, err := os.Stat(dir); err != nil {
-		return "", ""
+	if st, err := os.Stat(dir); err != nil || !st.IsDir() {
+		return "", false
 	}
-	logVerbose(opts, "using module cache for %s@%s", pkg.Path, pkg.Version)
-	return detectDirLicense(classifier, dir, opts)
+	return dir, true
 }
 
 func buildLicenseLink(modulePath, version, licenseFile string) string {
@@ -511,76 +599,97 @@ func fetchFromProxy(ctx context.Context, proxyURL, escapedPath, escapedVersion s
 	return nil
 }
 
-func extractLicenseFromZipFile(path, modulePath, version string) ([]byte, string, error) {
-	f, err := os.Open(path)
+func zipLicenseFilesFromPath(zipPath, modulePath, version string) ([]licenseFile, error) {
+	f, err := os.Open(zipPath)
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 	defer f.Close()
 	st, err := f.Stat()
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
-	return extractLicenseFromZip(f, st.Size(), modulePath, version)
+	return zipLicenseFiles(f, st.Size(), modulePath, version)
 }
 
-// extractLicenseFromZip returns the content and name of the preferred license
-// file at the root of a module zip. content is nil when there is none.
-func extractLicenseFromZip(r io.ReaderAt, size int64, modulePath, version string) ([]byte, string, error) {
+// zipLicenseFiles reads the license files (see licenseCandidates) of a module
+// zip. It returns no files when the module has none.
+func zipLicenseFiles(r io.ReaderAt, size int64, modulePath, version string) ([]licenseFile, error) {
 	reader, err := zip.NewReader(r, size)
 	if err != nil {
-		return nil, "", fmt.Errorf("opening zip: %w", err)
+		return nil, fmt.Errorf("opening zip: %w", err)
 	}
 
 	prefix := modulePath + "@" + version + "/"
-
-	var best *zip.File
-	bestPrio := -1
+	byName := make(map[string]*zip.File)
+	var names []string
 	for _, f := range reader.File {
-		if !isLicenseFile(f.Name, prefix) {
+		rel, ok := strings.CutPrefix(f.Name, prefix)
+		if !ok || strings.HasSuffix(rel, "/") {
 			continue
 		}
-		p := licenseNamePriority(strings.TrimPrefix(f.Name, prefix))
-		if bestPrio < 0 || p < bestPrio {
-			best, bestPrio = f, p
+		if dir, _ := path.Split(rel); dir == "" || strings.EqualFold(dir, "LICENSES/") {
+			byName[rel] = f
+			names = append(names, rel)
 		}
 	}
-	if best == nil {
-		return nil, "", nil
-	}
 
-	rc, err := best.Open()
+	var files []licenseFile
+	for _, name := range licenseCandidates(names) {
+		content, err := readZipFile(byName[name])
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, licenseFile{Name: name, Content: content})
+	}
+	return files, nil
+}
+
+func readZipFile(f *zip.File) ([]byte, error) {
+	rc, err := f.Open()
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 	defer rc.Close()
-	content, err := io.ReadAll(io.LimitReader(rc, maxLicenseFileSize))
-	if err != nil {
-		return nil, "", err
-	}
-	return content, strings.TrimPrefix(best.Name, prefix), nil
+	return io.ReadAll(io.LimitReader(rc, maxLicenseFileSize))
 }
 
-func isLicenseFile(name, prefix string) bool {
-	rel, ok := strings.CutPrefix(name, prefix)
-	if !ok || strings.Contains(rel, "/") {
-		return false
+// classifyFiles classifies license files and combines their licenses with
+// AND (LICENSE.code + LICENSE.APACHE, or the files of a REUSE LICENSES/
+// directory, all apply). For an Unknown result, problem says why.
+func classifyFiles(classifier *licenseclassifier.Classifier, files []licenseFile, opts Options) (license, problem string) {
+	var names, fileNames []string
+	rejected := false
+	for _, f := range files {
+		found, low := classifyNames(classifier, f.Content, opts)
+		rejected = rejected || low
+		for _, n := range found {
+			if !slices.Contains(names, n) {
+				names = append(names, n)
+			}
+		}
+		fileNames = append(fileNames, f.Name)
 	}
-	return licenseNamePriority(rel) >= 0
+	if len(names) > 0 {
+		license = strings.Join(names, " AND ")
+		logVerbose(opts, "  classified as %s", license)
+		return license, ""
+	}
+	if rejected {
+		return "Unknown", fmt.Sprintf("license in %s is below --min-confidence %.2f", strings.Join(fileNames, ", "), opts.MinConfidence)
+	}
+	return "Unknown", "license file " + strings.Join(fileNames, ", ") + " not recognised by the classifier"
 }
 
-// classifyLicense returns the license of a license file. A file can hold
-// several licenses (gopkg.in/yaml.v3: MIT for code ported from libyaml,
-// Apache-2.0 for the rest; vendored code under its own license). Every
-// distinct license found is kept, in file order, joined with AND: the
-// classifier can't tell "all of these apply" from "pick one", and AND is the
-// safe reading for a license policy. A real dual license can be pinned with
-// --licence (e.g. "MIT OR Apache-2.0").
-func classifyLicense(classifier *licenseclassifier.Classifier, content []byte, opts Options) string {
+// classifyNames returns the licenses found in the content of a license file.
+// A file can hold several licenses (gopkg.in/yaml.v3: MIT for code ported
+// from libyaml, Apache-2.0 for the rest; vendored code under its own
+// license): every distinct license is returned, in file order. rejected
+// reports matches dropped by --min-confidence.
+func classifyNames(classifier *licenseclassifier.Classifier, content []byte, opts Options) (names []string, rejected bool) {
 	matches := slices.Clone(classifier.Match(content).Matches)
 	slices.SortStableFunc(matches, func(a, b *licenseclassifier.Match) int { return a.StartLine - b.StartLine })
 
-	var names []string
 	for _, m := range matches {
 		// Skip copyright notice matches — we want actual license types.
 		if m.Name == "Copyright" {
@@ -589,17 +698,22 @@ func classifyLicense(classifier *licenseclassifier.Classifier, content []byte, o
 		logVerbose(opts, "  classifier match: %s (confidence: %.4f, lines %d-%d)", m.Name, m.Confidence, m.StartLine, m.EndLine)
 		if opts.MinConfidence > 0 && m.Confidence < opts.MinConfidence {
 			logVerbose(opts, "  rejected %s (confidence %.4f < threshold %.4f)", m.Name, m.Confidence, opts.MinConfidence)
+			rejected = true
 			continue
 		}
 		if !slices.Contains(names, m.Name) {
 			names = append(names, m.Name)
 		}
 	}
+	return names, rejected
+}
 
-	if len(names) == 0 {
-		return "Unknown"
-	}
-	license := strings.Join(names, " AND ")
-	logVerbose(opts, "  classified as %s", license)
+// classifyLicense returns the license of one license file, or "Unknown".
+// Several licenses are joined with AND: the classifier can't tell "all of
+// these apply" from "pick one", and AND is the safe reading for a license
+// policy. A real dual license can be pinned with --licence (e.g. "MIT OR
+// Apache-2.0").
+func classifyLicense(classifier *licenseclassifier.Classifier, content []byte, opts Options) string {
+	license, _ := classifyFiles(classifier, []licenseFile{{Content: content}}, opts)
 	return license
 }

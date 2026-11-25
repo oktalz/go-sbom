@@ -122,6 +122,16 @@ go-sbom -f go.mod --min-confidence=0.9
 
 Licenses detected below the threshold are reported as `Unknown`. Defaults to `0` (accept any match).
 
+#### How licenses are found
+
+For each module go-sbom reads its license files from the local replace directory, the module cache, or the module proxy, and classifies their text. License files are, in order of preference:
+
+1. a well-known top-level name: `LICENSE`, `LICENSE.md`, `LICENCE`, `COPYING`, `UNLICENSE`, `LICENSE-MIT`, … (case-insensitive; the best-ranked one is used);
+2. otherwise every other top-level file whose name starts with `license`, `licence`, `copying` or `unlicense` (`LICENSE.code`, `LICENSE-APACHE-2.0.txt`), except documentation licenses such as `LICENSE.docs`;
+3. otherwise the [REUSE](https://reuse.software/) layout, `LICENSES/*.txt`.
+
+When several files or several licenses in one file are found, they are combined with `AND` (see [Enforce license policy](#enforce-license-policy)). When no license can be determined, the module is reported as `Unknown` and a warning on stderr says why: no license file, a file the classifier doesn't recognise, or a match below `--min-confidence`. Set such licenses with `--licence`.
+
 #### Export to CycloneDX JSON
 
 ```bash
