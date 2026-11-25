@@ -73,6 +73,7 @@ func main() {
 	licenseOpts := licenses.Options{
 		MinConfidence: cfg.MinConfidence,
 		Verbose:       cfg.Verbose,
+		Order:         allowedList, // several licenses of a module are written in this order
 	}
 
 	if err := licenses.Fetch(ctx, info, licenseOpts); err != nil {

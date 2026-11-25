@@ -369,7 +369,7 @@ func TestFetchOtherLicenseNames(t *testing.T) {
 			// Rust-style dual license: the files can't say "OR", so AND
 			name:     "LICENSE-MIT and LICENSE-APACHE",
 			files:    map[string]string{"LICENSE-MIT": testMITText, "LICENSE-APACHE": apache},
-			license:  "MIT AND Apache-2.0",
+			license:  "Apache-2.0 AND MIT",
 			linkFile: "LICENSE-MIT",
 		},
 		{

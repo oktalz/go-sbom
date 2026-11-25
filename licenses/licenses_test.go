@@ -302,10 +302,14 @@ func TestClassifyLicenseMultiple(t *testing.T) {
 	classifier := getClassifier(t)
 
 	// One LICENSE file with two licenses (like gopkg.in/yaml.v3): both are
-	// reported, in file order, joined with AND.
+	// reported, joined with AND, alphabetically without an order.
 	text := []byte(readFixture(t, "mit-and-apache-2.0.txt"))
-	if got := classifyLicense(classifier, text, Options{}); got != "MIT AND Apache-2.0" {
-		t.Errorf("classifyLicense(MIT + Apache) = %q, want %q", got, "MIT AND Apache-2.0")
+	if got := classifyLicense(classifier, text, Options{}); got != "Apache-2.0 AND MIT" {
+		t.Errorf("classifyLicense(MIT + Apache) = %q, want %q", got, "Apache-2.0 AND MIT")
+	}
+	// With an order (the allowed list), in that order.
+	if got := classifyLicense(classifier, text, Options{Order: []string{"mit", "Apache-2.0"}}); got != "MIT AND Apache-2.0" {
+		t.Errorf("classifyLicense(MIT + Apache, order MIT first) = %q, want %q", got, "MIT AND Apache-2.0")
 	}
 
 	// The same license found twice is reported once.
@@ -496,6 +500,26 @@ func TestVerboseLinesNameTheModule(t *testing.T) {
 	for _, line := range lines {
 		if !strings.HasPrefix(line, "verbose: gopkg.in/yaml.v3@v3.0.1: ") {
 			t.Errorf("verbose line without module: %q", line)
+		}
+	}
+}
+
+func TestSortLicenses(t *testing.T) {
+	tests := []struct {
+		names, order, want []string
+	}{
+		{[]string{"MIT", "BSD-3-Clause", "Apache-2.0"}, nil, []string{"Apache-2.0", "BSD-3-Clause", "MIT"}},
+		{[]string{"MIT", "BSD-3-Clause", "Apache-2.0"}, []string{"MIT", "Apache-2.0", "BSD-3-Clause"}, []string{"MIT", "Apache-2.0", "BSD-3-Clause"}},
+		// not in the order: last, alphabetically
+		{[]string{"MPL-2.0", "BSD-3-Clause", "GPL-2.0", "MIT"}, []string{"MIT", "BSD-3-Clause"}, []string{"MIT", "BSD-3-Clause", "GPL-2.0", "MPL-2.0"}},
+		// order entries match case-insensitively
+		{[]string{"Apache-2.0", "MIT"}, []string{"mit", "apache-2.0"}, []string{"MIT", "Apache-2.0"}},
+	}
+	for _, tt := range tests {
+		got := slices.Clone(tt.names)
+		sortLicenses(got, tt.order)
+		if !slices.Equal(got, tt.want) {
+			t.Errorf("sortLicenses(%v, %v) = %v, want %v", tt.names, tt.order, got, tt.want)
 		}
 	}
 }

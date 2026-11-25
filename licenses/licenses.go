@@ -45,7 +45,12 @@ type Options struct {
 	// module is the module being looked at; verbose lines are prefixed with
 	// it, because modules are processed concurrently and their lines
 	// interleave.
-	module        string
+	module string
+	// Order is the order in which several licenses of one module are
+	// written ("MIT AND Apache-2.0"): licenses in Order first, in its order
+	// (matched case-insensitively), then the others alphabetically. main
+	// passes the allowed list, so the output follows the user's config.
+	Order         []string
 	MinConfidence float64
 	Verbose       bool
 }
@@ -697,6 +702,7 @@ func classifyFiles(classifier *licenseclassifier.Classifier, files []licenseFile
 		fileNames = append(fileNames, f.Name)
 	}
 	if len(names) > 0 {
+		sortLicenses(names, opts.Order)
 		license = strings.Join(names, " AND ")
 		logVerbose(opts, "  classified as %s", license)
 		return license, ""
@@ -705,6 +711,26 @@ func classifyFiles(classifier *licenseclassifier.Classifier, files []licenseFile
 		return "Unknown", fmt.Sprintf("license in %s is below --min-confidence %.2f", strings.Join(fileNames, ", "), opts.MinConfidence)
 	}
 	return "Unknown", "license file " + strings.Join(fileNames, ", ") + " not recognised by the classifier"
+}
+
+// sortLicenses sorts names by their position in order; names that are not
+// in order go last, alphabetically. AND is commutative, so this only makes
+// the same set of licenses always read the same.
+func sortLicenses(names, order []string) {
+	rank := func(name string) int {
+		for i, o := range order {
+			if strings.EqualFold(o, name) {
+				return i
+			}
+		}
+		return len(order)
+	}
+	slices.SortStableFunc(names, func(a, b string) int {
+		if d := rank(a) - rank(b); d != 0 {
+			return d
+		}
+		return strings.Compare(a, b)
+	})
 }
 
 // classifyNames returns the licenses found in the content of a license file.
