@@ -44,6 +44,34 @@ gh attestation verify go-sbom_v0.1.0_linux_amd64 --repo oktalz/go-sbom
 gh attestation verify go-sbom_v0.1.0_linux_amd64 --repo oktalz/go-sbom --predicate-type https://cyclonedx.org/bom
 ```
 
+#### Container image
+
+Each release is also published as `ghcr.io/oktalz/go-sbom` for linux/amd64 and linux/arm64.
+Tags are the full version (`v0.1.0` becomes `0.1.0`), `0.1` and `latest`; pre-releases get only the full version.
+The image runs in `/work`, so mount your project there:
+
+```bash
+docker run --rm -v "$PWD:/work:ro" ghcr.io/oktalz/go-sbom go.mod
+docker run --rm ghcr.io/oktalz/go-sbom --image alpine:3.20
+```
+
+The image runs as a non-root user. To write files or read a `docker save` tarball, run it as yourself:
+
+```bash
+docker run --rm --user "$(id -u):$(id -g)" -v "$PWD:/work" ghcr.io/oktalz/go-sbom go.mod -o sbom.cdx.json
+```
+
+For a private registry, mount your Docker config.
+The image has no credential helpers (`credsStore`, `credHelpers`), so only passwords stored in the config work.
+
+```bash
+docker run --rm --user "$(id -u):$(id -g)" -e DOCKER_CONFIG=/docker \
+  -v "$HOME/.docker/config.json:/docker/config.json:ro" \
+  ghcr.io/oktalz/go-sbom --image registry.example.com/app:1.0
+```
+
+Check the image provenance with `gh attestation verify oci://ghcr.io/oktalz/go-sbom:0.1.0 --repo oktalz/go-sbom`.
+
 ### Usage
 
 ```
