@@ -1,8 +1,10 @@
 package packages
 
 import (
+	"debug/buildinfo"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"testing"
 )
 
@@ -288,5 +290,45 @@ func TestPackageRef(t *testing.T) {
 		if got := pkg.Ref(); got != want {
 			t.Errorf("Ref() = %q, want %q", got, want)
 		}
+	}
+}
+
+func TestReadBinarySelf(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := Read(exe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Main.Path != "github.com/oktalz/go-sbom" || info.Dir != filepath.Dir(exe) || info.GoVersion == "" {
+		t.Errorf("Main.Path %q, Dir %q, GoVersion %q", info.Main.Path, info.Dir, info.GoVersion)
+	}
+	if len(info.Deps) == 0 {
+		t.Error("no dependencies read from the test binary")
+	}
+}
+
+func TestFromBuildInfo(t *testing.T) {
+	bi := &buildinfo.BuildInfo{
+		GoVersion: "go1.27.0",
+		Path:      "example.com/app/cmd",
+		Main:      debug.Module{Path: "example.com/app", Version: "v1.0.0", Sum: "h1:main"},
+		Deps: []*debug.Module{
+			{Path: "example.com/a", Version: "v1.0.0", Sum: "h1:a"},
+			{Path: "example.com/b", Version: "v1.0.0", Replace: &debug.Module{Path: "example.com/fork", Version: "v1.1.0", Sum: "h1:f"}},
+		},
+		Settings: []debug.BuildSetting{{Key: "CGO_ENABLED", Value: "1"}},
+	}
+	info := FromBuildInfo(bi)
+	if info.Dir != "" || !info.CGOEnabled || info.GoVersion != "go1.27.0" || info.Path != "example.com/app/cmd" {
+		t.Errorf("info = %+v", info)
+	}
+	if info.Main != (Package{Path: "example.com/app", Version: "v1.0.0", Sum: "h1:main"}) {
+		t.Errorf("Main = %+v", info.Main)
+	}
+	if len(info.Deps) != 2 || info.Deps[1].Replace == nil || info.Deps[1].Effective().Ref() != "example.com/fork@v1.1.0" {
+		t.Errorf("Deps = %+v", info.Deps)
 	}
 }

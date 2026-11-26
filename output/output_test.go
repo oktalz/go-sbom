@@ -193,8 +193,8 @@ func TestWriteCSV(t *testing.T) {
 	}
 
 	// Check header
-	if lines[0] != "package,version,license" {
-		t.Errorf("CSV header = %q, want %q", lines[0], "package,version,license")
+	if lines[0] != "package,version,license,type" {
+		t.Errorf("CSV header = %q, want %q", lines[0], "package,version,license,type")
 	}
 
 	// Check data rows exist
@@ -202,7 +202,7 @@ func TestWriteCSV(t *testing.T) {
 	for _, line := range lines[1:] {
 		if strings.HasPrefix(line, "github.com/pkg/errors,") {
 			found = true
-			if !strings.Contains(line, "v0.9.1") || !strings.Contains(line, "BSD-2-Clause") {
+			if line != "github.com/pkg/errors,v0.9.1,BSD-2-Clause,go" {
 				t.Errorf("unexpected CSV row: %s", line)
 			}
 		}
@@ -222,8 +222,8 @@ func TestWriteCSVWithLinks(t *testing.T) {
 	out := buf.String()
 	lines := strings.Split(strings.TrimSpace(out), "\n")
 
-	if lines[0] != "package,version,license,link" {
-		t.Errorf("CSV header with links = %q, want %q", lines[0], "package,version,license,link")
+	if lines[0] != "package,version,license,link,type" {
+		t.Errorf("CSV header with links = %q, want %q", lines[0], "package,version,license,link,type")
 	}
 
 	found := false

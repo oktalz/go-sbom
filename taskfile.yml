@@ -99,7 +99,16 @@ tasks:
     cmds:
       - go build -o {{.BIN}} .
       - rm -rf {{.OUT}} && mkdir -p {{.OUT}}
-      # inputs: this repo's go.mod, a binary, and the fixtures in testdata/sbom
+      # container images: the image fixtures with the go-sbom binary inside
+      - for: [alpine, debian]
+        cmd: go run ./hack/test-image -root testdata/sbom/image-{{.ITEM}} -binary {{.BIN}} -tag go-sbom-test/{{.ITEM}}:1 -o {{.DIR}}/{{.ITEM}}.tar
+      # rpm: go-rpmdb's Fedora 35 SQLite database, too large to keep in testdata
+      - |
+        rm -rf {{.DIR}}/rpm-root && mkdir -p {{.DIR}}/rpm-root/etc {{.DIR}}/rpm-root/usr/lib/sysimage/rpm
+        printf 'ID=fedora\nVERSION_ID=35\n' > {{.DIR}}/rpm-root/etc/os-release
+        cp "$(go list -m -f '{{"{{.Dir}}"}}' github.com/knqyf263/go-rpmdb)/pkg/testdata/fedora35/rpmdb.sqlite" {{.DIR}}/rpm-root/usr/lib/sysimage/rpm/
+        go run ./hack/test-image -root {{.DIR}}/rpm-root -binary {{.BIN}} -tag go-sbom-test/fedora:35 -o {{.DIR}}/rpm.tar
+      # inputs: this repo's go.mod, a binary, the fixtures in testdata/sbom, and the images
       - for: [cyclonedx, spdx2, spdx3]
         cmd: |
           {{.BIN}} go.mod -o {{.OUT}}/repo.{{.ITEM}}.json
@@ -108,6 +117,9 @@ tasks:
           {{.BIN}} testdata/sbom/edge/go.mod -o {{.OUT}}/edge.{{.ITEM}}.json \
             --licence 'github.com/inc/lib:Company Proprietary' \
             --licence 'github.com/dual/lib:MIT OR Apache-2.0'
+          {{.BIN}} --image-archive {{.DIR}}/alpine.tar -o {{.OUT}}/image-alpine.{{.ITEM}}.json
+          {{.BIN}} --image-archive {{.DIR}}/debian.tar -o {{.OUT}}/image-debian.{{.ITEM}}.json
+          {{.BIN}} --image-archive {{.DIR}}/rpm.tar -o {{.OUT}}/image-rpm.{{.ITEM}}.json
       - "{{.BIN}} go.mod -o {{.OUT}}/repo.cdx.json"
       # .spdx.json follows --spdx-version (default 2)
       - "{{.BIN}} go.mod -o {{.OUT}}/repo-default.spdx.json"

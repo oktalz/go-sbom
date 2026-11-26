@@ -6,6 +6,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/oktalz/go-sbom/logo"
 	"github.com/oktalz/go-sbom/output"
@@ -37,11 +38,15 @@ type Config struct {
 	Exclude       ffval.StringList `ff:"short: e, long: exclude,        usage: 'module path prefixes or globs to skip in --check, comma-separated or repeatable (e.g. company.com/internal)'"`
 	Licence       ffval.StringList `ff:"long: licence,                  usage: 'set license for a package (e.g. company.com/pkg:MIT, repeatable)'"`
 	File          string           `ff:"short: f, long: file,           usage: 'file to analyze (binary or go.mod); can also be given as the first argument'"`
+	Image         string           `ff:"long: image,                    usage: 'container image to analyze, pulled from its registry (e.g. alpine:3.20)'"`
+	ImageArchive  string           `ff:"long: image-archive,            usage: 'container image to analyze, from a docker save tarball'"`
+	Platform      string           `ff:"long: platform,                 usage: 'platform of a multi-platform --image, as os/arch[/variant] (default: linux/<arch of go-sbom>)'"`
 	Output        string           `ff:"short: o, long: output,         usage: 'output file (.txt, .yml, .csv, .json, .cyclonedx.json or .cdx.json, .spdx.json, .spdx2.json, .spdx3.json)'"`
 	Format        string           `ff:"long: format,                   usage: 'output format override (text, csv, yaml, json, cyclonedx, spdx, spdx2, spdx3)'"`
 	Config        string           `ff:"short: c, long: config,         usage: 'YAML config file with flag values (default: .go-sbom.yml or .go-sbom.yaml)'"`
 	JUnitFile     string           `ff:"long: junit-file,               usage: 'write a JUnit XML report of the license check (used with --check)'"`
 	MinConfidence float64          `ff:"long: min-confidence,           usage: 'minimum confidence threshold for license classification (0.0-1.0)'"`
+	ImageTimeout  time.Duration    `ff:"long: image-timeout,            default: 10m, usage: 'time limit for pulling and reading the image (0 for none)'"`
 	Check         bool             `ff:"long: check,                    usage: 'check licenses against --allowed and exit 2 on violations (no SBOM is written)'"`
 	Version       bool             `ff:"short: v, long: version,        usage: 'show version'"`
 	Help          bool             `ff:"short: h, long: help,           usage: 'show this help message'"`
@@ -70,6 +75,10 @@ func Get() Config {
 	}
 
 	if err := resolveFile(&configuration, parsed.positional, parsed.cliFile); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	if err := selectInput(&configuration, parsed.cliInputs, parsed.envInputs); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
@@ -104,6 +113,8 @@ type parseResult struct {
 	fs         *ff.FlagSet
 	cliFile    string // --file as given on the command line (not from env)
 	positional []string
+	cliInputs  []string // inputs (see [inputs]) given on the command line
+	envInputs  []string // inputs given on the command line or in the environment
 	cfg        Config
 	// allowedOutsideConfig / excludeOutsideConfig are true when --allowed /
 	// --exclude came from the command line or the environment rather than the
@@ -161,8 +172,13 @@ func parse(args []string) (parseResult, error) {
 	}
 	cfg, fs, err := parseOnce(args, opts...)
 	cfg.Config = configFile
+	cliInputs := inputs(&cliCfg)
+	if len(positional) > 0 && cliCfg.File == "" {
+		cliInputs = append([]string{"file"}, cliInputs...)
+	}
 	return parseResult{
 		cfg: cfg, fs: fs, positional: positional, cliFile: cliCfg.File,
+		cliInputs: cliInputs, envInputs: inputs(&envCfg),
 		allowedOutsideConfig: envCfg.Allowed.IsSet(), excludeOutsideConfig: envCfg.Exclude.IsSet(),
 	}, err
 }
@@ -247,4 +263,47 @@ func resolveFile(cfg *Config, positional []string, cliFile string) error {
 		cfg.File = positional[0]
 		return nil
 	}
+}
+
+// inputs names the flags of the analyzed inputs set in c.
+func inputs(c *Config) []string {
+	var out []string
+	for _, in := range []struct{ flag, value string }{
+		{"file", c.File}, {"image", c.Image}, {"image-archive", c.ImageArchive},
+	} {
+		if in.value != "" {
+			out = append(out, in.flag)
+		}
+	}
+	return out
+}
+
+// selectInput keeps the input of the strongest source (command line, then
+// environment, then config file), so a config file's file: does not block --image.
+// Two inputs from that source are an error.
+func selectInput(cfg *Config, cliInputs, envInputs []string) error {
+	keep := cliInputs
+	if len(keep) == 0 {
+		keep = envInputs
+	}
+	if len(keep) == 0 {
+		keep = inputs(cfg)
+	}
+	switch len(keep) {
+	case 0:
+		return errors.New("nothing to analyze: give a file, --image or --image-archive")
+	case 1:
+	default:
+		return fmt.Errorf("--%s and --%s are mutually exclusive", keep[0], keep[1])
+	}
+	if keep[0] != "file" {
+		cfg.File = ""
+	}
+	if keep[0] != "image" {
+		cfg.Image = ""
+	}
+	if keep[0] != "image-archive" {
+		cfg.ImageArchive = ""
+	}
+	return nil
 }

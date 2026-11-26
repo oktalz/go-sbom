@@ -12,6 +12,7 @@ import (
 
 	"github.com/joho/godotenv"
 	"github.com/oktalz/go-sbom/args"
+	"github.com/oktalz/go-sbom/image"
 	"github.com/oktalz/go-sbom/licenses"
 	"github.com/oktalz/go-sbom/output"
 	"github.com/oktalz/go-sbom/packages"
@@ -38,19 +39,16 @@ func main() {
 
 	cfg := args.Get()
 
-	file := cfg.File
-	if file == "" {
-		fmt.Fprintln(os.Stderr, "error: file argument is required")
-		os.Exit(exitUsage)
-	}
-
-	info, err := packages.Read(file)
+	info, err := readInput(&cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(exitUsage)
 	}
 
-	if info.CGOEnabled {
+	switch {
+	case info.Image != nil && len(info.Image.CGOBinaries) > 0:
+		fmt.Fprintf(os.Stderr, "warning: built with CGO_ENABLED=1, C library dependencies are not tracked: %s\n", strings.Join(info.Image.CGOBinaries, ", "))
+	case info.CGOEnabled:
 		fmt.Fprintln(os.Stderr, "warning: binary was built with CGO_ENABLED=1; C library dependencies are not tracked in the SBOM")
 	}
 
@@ -112,6 +110,19 @@ func main() {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(exitUsage)
 	}
+}
+
+// readInput reads the file or container image named in cfg.
+func readInput(cfg *args.Config) (*packages.Info, error) {
+	if cfg.Image == "" && cfg.ImageArchive == "" {
+		return packages.Read(cfg.File)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	if cfg.ImageTimeout > 0 { // 0 means no limit
+		ctx, cancel = context.WithTimeout(ctx, cfg.ImageTimeout)
+	}
+	defer cancel()
+	return image.Read(ctx, cfg.Image, cfg.ImageArchive, image.Options{Platform: cfg.Platform, Verbose: cfg.Verbose})
 }
 
 // findViolations returns the dependencies whose license the policy does not

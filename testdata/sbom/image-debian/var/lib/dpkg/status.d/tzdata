@@ -1,0 +1,4 @@
+Package: tzdata
+Version: 2024a-0+deb12u1
+Architecture: all
+Description: time zone and daylight-saving time data

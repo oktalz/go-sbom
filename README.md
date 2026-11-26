@@ -13,6 +13,7 @@ A tool for extracting Software Bill of Materials (SBOM) from Go binaries and `go
 ### Features
 
 - Extract dependencies from compiled Go binaries or `go.mod` files
+- Analyze container images from a registry or a `docker save` tarball: the Go modules of every Go binary, plus Alpine (apk), Debian/Ubuntu (dpkg) and RPM (RHEL, Fedora, SUSE, Amazon Linux) packages with their licenses
 - Automatic license detection using [Google's License Classifier](https://github.com/google/licenseclassifier)
 - Manual license assignment with `--licence` flag (repeatable)
 - License policy enforcement with `--check` against an `--allowed` list, with `--exclude` for internal modules
@@ -62,11 +63,15 @@ FLAGS
   -e, --exclude STRING           module path prefixes or globs to skip in --check, comma-separated or repeatable (e.g. company.com/internal)
       --licence STRING           set license for a package (e.g. company.com/pkg:MIT, repeatable)
   -f, --file STRING              file to analyze (binary or go.mod); can also be given as the first argument
+      --image STRING             container image to analyze, pulled from its registry (e.g. alpine:3.20)
+      --image-archive STRING     container image to analyze, from a docker save tarball
+      --platform STRING          platform of a multi-platform --image, as os/arch[/variant] (default: linux/<arch of go-sbom>)
   -o, --output STRING            output file (.txt, .yml, .csv, .json, .cyclonedx.json or .cdx.json, .spdx.json, .spdx2.json, .spdx3.json)
       --format STRING            output format override (text, csv, yaml, json, cyclonedx, spdx, spdx2, spdx3)
   -c, --config STRING            YAML config file with flag values (default: .go-sbom.yml or .go-sbom.yaml)
       --junit-file STRING        write a JUnit XML report of the license check (used with --check)
       --min-confidence FLOAT64   minimum confidence threshold for license classification (0.0-1.0) (default: 0)
+      --image-timeout DURATION   time limit for pulling and reading the image (0 for none) (default: 10m0s)
       --check                    check licenses against --allowed and exit 2 on violations (no SBOM is written)
   -v, --version                  show version
   -h, --help                     show this help message
@@ -82,6 +87,36 @@ go-sbom /path/to/binary      # same as: go-sbom -f /path/to/binary
 
 A binary records its modules and versions but no license texts. Dependency licenses are looked up in the module cache or the proxy; the main module's own license is not, so set it with `--licence` if you need it (e.g. `--licence github.com/example/myapp:MIT`).
 
+#### Analyze a container image
+
+```bash
+go-sbom --image alpine:3.20                          # pulled from its registry
+go-sbom --image ghcr.io/org/app:1.0 --platform linux/arm64
+docker save app:1.0 -o app.tar && go-sbom --image-archive app.tar
+```
+
+The SBOM lists:
+
+- the Go modules of every Go binary in the image, with licenses found as for a binary,
+- the main module of each Go binary, with license `Unknown`, as for a binary (set it with `--licence`),
+- the apk, dpkg and rpm packages, including distroless `status.d` entries.
+
+The image is named by its manifest digest. A `docker save` tarball is named by its image ID (the config digest, as `docker images --no-trunc` shows), because the tarball has no registry manifest. The Go version of each binary is not recorded.
+
+Notes:
+
+- Registry credentials come from the Docker config (`docker login`) and its credential helpers.
+- `--platform` picks the image of a multi-platform index. The default is `linux/` plus the architecture of go-sbom. For a single-platform image or a tarball, a given `--platform` must match the image.
+- `--image-timeout` limits pulling and reading the image (default `10m`, `0` for no limit).
+- Alpine packages carry their license in the package database.
+- Debian package licenses come from `/usr/share/doc/<package>/copyright`. Only machine-readable (DEP-5) files are read; others give `Unknown`. Licenses of `Files: debian/*` stanzas are left out: they cover the packaging, not the package.
+- RPM databases in all three formats are read: SQLite, NDB and BerkeleyDB. Only the first one found counts, so a database left over from a migration is ignored. Versions carry the epoch as `epoch:version-release`. Old Fedora license names with one clear SPDX id are converted (`GPLv2+` becomes `GPL-2.0-or-later`); others, such as `BSD`, stay as they are.
+- The purl namespace is the `ID` of `/etc/os-release`, e.g. `rhel` or `amzn`. Some tools use `redhat` for RHEL, so purls may not match theirs.
+- A warning is printed when the image has an `/etc/os-release` but no package database.
+- `--check`, `--exclude` and `--licence` match OS packages by name, e.g. `--licence busybox:GPL-2.0-only`.
+- Other ecosystems (npm, pip, jars) are not listed.
+- `--file`, `--image` and `--image-archive` are mutually exclusive. The command line beats the environment, which beats the config file. So `--image` works in a directory whose `.go-sbom.yml` sets `file:`.
+
 #### Analyze a go.mod file
 
 ```bash
@@ -93,6 +128,8 @@ go-sbom -f go.mod
 ```bash
 go-sbom -f go.mod -o sbom.csv
 ```
+
+The last column, `type`, is `go` for Go modules and `apk`, `deb` or `rpm` for OS packages of a container image.
 
 #### Export to YAML with license links
 
@@ -240,6 +277,8 @@ warning: binary was built with CGO_ENABLED=1; C library dependencies are not tra
 
 C dependencies linked via cgo are not visible to the Go module system and will not appear in the SBOM. Use `--licence` to manually add them if needed.
 
+For a container image, the warning names the binaries built with cgo.
+
 #### Vulnerability scanning
 
 go-sbom does not check for known vulnerabilities. An SBOM lists components, and vulnerability data changes every day, so matching is best done by a scanner at the time you need the answer:
@@ -268,15 +307,25 @@ Go version:  1.27
 Module:      github.com/oktalz/go-sbom
 Main:        github.com/oktalz/go-sbom (MIT)
 
-PACKAGE                                 VERSION        LICENSE
-github.com/google/licenseclassifier/v2  v2.0.0         Apache-2.0
-github.com/peterbourgon/ff/v4           v4.0.0-beta.1  Apache-2.0
-gopkg.in/yaml.v2                        v2.4.0         Apache-2.0
-github.com/oktalz/junit-report          v0.9.1         BSD-3-Clause
-golang.org/x/mod                        v0.43.0        BSD-3-Clause
-github.com/davecgh/go-spew              v1.1.1         ISC
-github.com/joho/godotenv                v1.5.1         MIT
-github.com/sergi/go-diff                v1.4.0         MIT
+PACKAGE                                      VERSION               LICENSE
+github.com/docker/cli                        v29.7.2+incompatible  Apache-2.0
+github.com/google/go-containerregistry       v0.22.1               Apache-2.0
+github.com/google/licenseclassifier/v2       v2.0.0                Apache-2.0
+github.com/opencontainers/go-digest          v1.0.0                Apache-2.0
+github.com/opencontainers/image-spec         v1.1.1                Apache-2.0
+github.com/peterbourgon/ff/v4                v4.0.0-beta.1         Apache-2.0
+gotest.tools/v3                              v3.5.2                Apache-2.0
+github.com/oktalz/junit-report               v0.9.1                BSD-3-Clause
+golang.org/x/mod                             v0.43.0               BSD-3-Clause
+golang.org/x/sync                            v0.22.0               BSD-3-Clause
+golang.org/x/sys                             v0.47.0               BSD-3-Clause
+github.com/davecgh/go-spew                   v1.1.1                ISC
+github.com/docker/docker-credential-helpers  v0.9.3                MIT
+github.com/joho/godotenv                     v1.5.1                MIT
+github.com/sergi/go-diff                     v1.4.0                MIT
+github.com/sirupsen/logrus                   v1.9.4                MIT
+gopkg.in/yaml.v2                             v2.4.0                MIT AND Apache-2.0
+github.com/klauspost/compress                v1.19.2               MIT AND Apache-2.0 AND BSD-3-Clause
 ```
 
 For a go.mod, `Go version` is the `go` line and the main module has no version; for a binary it is the toolchain that built it (e.g. `go1.27.4`) and the module version stamped by `go build`.

@@ -153,11 +153,11 @@ func (b *spdx3Builder) licenseElement(license string) string {
 }
 
 // pkg adds a software_Package with its license relationships and returns its id.
-func (b *spdx3Builder) pkg(p *packages.Package, purpose string) string {
+func (b *spdx3Builder) pkg(p *packages.Package, purpose, local string) string {
 	elem := spdx3Package{
-		spdx3Element:   b.element("software_Package", spdxID(p.Path, p.Version), p.Path),
+		spdx3Element:   b.element("software_Package", local, p.Path),
 		Version:        p.Version,
-		Purl:           goPurl(p.Path, p.Version),
+		Purl:           purl(p),
 		PrimaryPurpose: purpose,
 	}
 	b.add(elem.SpdxID, elem)
@@ -189,20 +189,20 @@ func writeSPDX3(info *packages.Info, w io.Writer) error {
 		CreatedUsing: []string{tool.SpdxID},
 	}
 
+	ids := newSPDXIDSet()
+	mainLocal, _ := ids.id(&info.Main)
 	var mainID string
 	if info.Main.Path != "" {
-		mainID = b.pkg(&info.Main, "application")
+		mainID = b.pkg(&info.Main, mainPurpose(info, "application", "container"), mainLocal)
 	}
-	seen := map[string]bool{mainID: true}
 	var deps []string
 	for i := range info.Deps {
 		pkg := info.Deps[i].Effective()
-		id := b.id(spdxID(pkg.Path, pkg.Version))
-		if seen[id] {
+		local, isNew := ids.id(pkg)
+		if !isNew {
 			continue // several modules replaced by the same one
 		}
-		seen[id] = true
-		deps = append(deps, b.pkg(pkg, "library"))
+		deps = append(deps, b.pkg(pkg, "library", local))
 	}
 	if mainID != "" && len(deps) > 0 {
 		b.relationship(mainID, "dependsOn", deps)
@@ -230,5 +230,6 @@ func writeSPDX3(info *packages.Info, w io.Writer) error {
 	graph := append([]any{creation, agent, tool, doc, dataLicense, sbom}, b.graph...)
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
+	enc.SetEscapeHTML(false) // purl qualifiers use &
 	return enc.Encode(spdx3Document{Context: spdx3Context, Graph: graph})
 }

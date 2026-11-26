@@ -1,0 +1,26 @@
+Package: base-files
+Essential: yes
+Status: install ok installed
+Priority: required
+Architecture: amd64
+Version: 12.4+deb12u7
+Description: Debian base system miscellaneous files
+ This package contains the basic filesystem hierarchy of a Debian system, and
+ several important miscellaneous files.
+
+Package: libc6
+Status: install ok installed
+Priority: optional
+Multi-Arch: same
+Architecture: amd64
+Source: glibc
+Version: 2.36-9+deb12u8
+Description: GNU C Library: Shared libraries
+ Contains the standard libraries that are used by nearly all programs on
+ the system.
+
+Package: removed-tool
+Status: deinstall ok config-files
+Architecture: amd64
+Version: 1.0-1
+Description: a package removed with its config files kept

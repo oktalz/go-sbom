@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -180,6 +181,47 @@ func sortDeps(info *packages.Info) {
 
 func writeText(info *packages.Info, w io.Writer, links bool) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	writeTextHeader(info, tw)
+	fmt.Fprintln(tw)
+	header := "PACKAGE\tVERSION\tLICENSE"
+	if links {
+		header += "\tLINK"
+	}
+	if info.Image != nil {
+		header += "\tTYPE"
+	}
+	fmt.Fprintln(tw, header)
+	for i := range info.Deps {
+		dep := &info.Deps[i]
+		pkg := dep.Effective()
+		line := pkg.Path + "\t" + pkg.Version + "\t" + pkg.License
+		if links {
+			line += "\t" + pkg.LicenseLink
+		}
+		if info.Image != nil {
+			line += "\t" + typeName(pkg)
+		}
+		if dep.Replace != nil {
+			line += "\t(replaces " + dep.Ref() + ")"
+		}
+		fmt.Fprintln(tw, line)
+	}
+	return tw.Flush()
+}
+
+func writeTextHeader(info *packages.Info, tw io.Writer) {
+	if img := info.Image; img != nil {
+		fmt.Fprintf(tw, "Image:\t%s\n", img.Ref)
+		fmt.Fprintf(tw, "Digest:\t%s\n", img.Digest)
+		fmt.Fprintf(tw, "Platform:\t%s\n", img.Platform)
+		if img.Distro != "" {
+			fmt.Fprintf(tw, "Distro:\t%s\n", img.Distro)
+		}
+		for _, b := range img.Binaries {
+			fmt.Fprintf(tw, "Go binary:\t%s\n", b)
+		}
+		return
+	}
 	fmt.Fprintf(tw, "Go version:\t%s\n", info.GoVersion)
 	fmt.Fprintf(tw, "Module:\t%s\n", info.Path)
 	mainLine := info.Main.Ref()
@@ -187,26 +229,22 @@ func writeText(info *packages.Info, w io.Writer, links bool) error {
 		mainLine += " (" + info.Main.License + ")"
 	}
 	fmt.Fprintf(tw, "Main:\t%s\n", mainLine)
-	fmt.Fprintln(tw)
-	if links {
-		fmt.Fprint(tw, "PACKAGE\tVERSION\tLICENSE\tLINK\n")
-	} else {
-		fmt.Fprint(tw, "PACKAGE\tVERSION\tLICENSE\n")
+}
+
+// typeName names a package type in text, CSV, YAML and JSON output.
+func typeName(p *packages.Package) string {
+	if p.Type == "" {
+		return "go"
 	}
-	for i := range info.Deps {
-		dep := &info.Deps[i]
-		pkg := dep.Effective()
-		replaces := ""
-		if dep.Replace != nil {
-			replaces = "\t(replaces " + dep.Ref() + ")"
-		}
-		if links {
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s%s\n", pkg.Path, pkg.Version, pkg.License, pkg.LicenseLink, replaces)
-		} else {
-			fmt.Fprintf(tw, "%s\t%s\t%s%s\n", pkg.Path, pkg.Version, pkg.License, replaces)
-		}
+	return p.Type
+}
+
+// outputType is the type field of YAML and JSON, only set for images.
+func outputType(info *packages.Info, p *packages.Package) string {
+	if info.Image == nil {
+		return ""
 	}
-	return tw.Flush()
+	return typeName(p)
 }
 
 func writeCSV(info *packages.Info, w io.Writer, links bool) error {
@@ -217,6 +255,7 @@ func writeCSV(info *packages.Info, w io.Writer, links bool) error {
 	if links {
 		header = append(header, "link")
 	}
+	header = append(header, "type")
 	if err := cw.Write(header); err != nil {
 		return err
 	}
@@ -227,6 +266,7 @@ func writeCSV(info *packages.Info, w io.Writer, links bool) error {
 		if links {
 			row = append(row, pkg.LicenseLink)
 		}
+		row = append(row, typeName(pkg))
 		if err := cw.Write(row); err != nil {
 			return err
 		}
@@ -235,10 +275,19 @@ func writeCSV(info *packages.Info, w io.Writer, links bool) error {
 }
 
 type jsonOutput struct {
+	Image        *jsonImage       `json:"image,omitempty"`
 	GoVersion    string           `json:"go_version"`
 	Module       string           `json:"module"`
 	Main         jsonPackage      `json:"main"`
 	Dependencies []jsonDependency `json:"dependencies"`
+}
+
+type jsonImage struct {
+	Ref      string   `json:"ref"`
+	Digest   string   `json:"digest"`
+	Platform string   `json:"platform"`
+	Distro   string   `json:"distro,omitempty"`
+	Binaries []string `json:"go_binaries,omitempty"`
 }
 
 type jsonPackage struct {
@@ -253,6 +302,7 @@ type jsonDependency struct {
 	License string `json:"license"`
 	Link    string `json:"link,omitempty"`
 	Replace string `json:"replaces,omitempty"`
+	Type    string `json:"type,omitempty"`
 }
 
 func writeJSON(info *packages.Info, w io.Writer, links bool) error {
@@ -264,6 +314,9 @@ func writeJSON(info *packages.Info, w io.Writer, links bool) error {
 			Version: info.Main.Version,
 			License: info.Main.License,
 		},
+	}
+	if img := info.Image; img != nil {
+		out.Image = &jsonImage{Ref: img.Ref, Digest: img.Digest, Platform: img.Platform, Distro: img.Distro, Binaries: img.Binaries}
 	}
 
 	for i := range info.Deps {
@@ -278,6 +331,7 @@ func writeJSON(info *packages.Info, w io.Writer, links bool) error {
 			Version: pkg.Version,
 			License: pkg.License,
 			Replace: replaces,
+			Type:    outputType(info, pkg),
 		}
 		if links {
 			d.Link = pkg.LicenseLink
@@ -287,12 +341,28 @@ func writeJSON(info *packages.Info, w io.Writer, links bool) error {
 
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
+	enc.SetEscapeHTML(false) // purl qualifiers use &
 	return enc.Encode(out)
 }
 
 func writeYAML(info *packages.Info, out io.Writer, links bool) error {
 	// bufio.Writer keeps the first write error and reports it from Flush.
 	w := bufio.NewWriter(out)
+	if img := info.Image; img != nil {
+		fmt.Fprint(w, "image:\n")
+		fmt.Fprintf(w, "  ref: %s\n", img.Ref)
+		fmt.Fprintf(w, "  digest: %s\n", img.Digest)
+		fmt.Fprintf(w, "  platform: %s\n", img.Platform)
+		if img.Distro != "" {
+			fmt.Fprintf(w, "  distro: %s\n", img.Distro)
+		}
+		if len(img.Binaries) > 0 {
+			fmt.Fprint(w, "  go_binaries:\n")
+			for _, b := range img.Binaries {
+				fmt.Fprintf(w, "    - %s\n", b)
+			}
+		}
+	}
 	fmt.Fprintf(w, "go_version: %s\n", info.GoVersion)
 	fmt.Fprintf(w, "module: %s\n", info.Path)
 	fmt.Fprint(w, "main:\n")
@@ -317,6 +387,9 @@ func writeYAML(info *packages.Info, out io.Writer, links bool) error {
 		}
 		if replaces != "" {
 			fmt.Fprintf(w, "    replaces: %s\n", replaces)
+		}
+		if t := outputType(info, pkg); t != "" {
+			fmt.Fprintf(w, "    type: %s\n", t)
 		}
 	}
 	return w.Flush()
@@ -389,9 +462,9 @@ func writeCycloneDX(info *packages.Info, w io.Writer) error {
 	}
 
 	if info.Main.Path != "" {
-		purl := goPurl(info.Main.Path, info.Main.Version)
+		purl := purl(&info.Main)
 		main := cdxComponent{
-			Type:     "application",
+			Type:     mainPurpose(info, "application", "container"),
 			BOMRef:   purl,
 			Name:     info.Main.Path,
 			Version:  info.Main.Version,
@@ -408,7 +481,7 @@ func writeCycloneDX(info *packages.Info, w io.Writer) error {
 	for i := range info.Deps {
 		dep := &info.Deps[i]
 		pkg := dep.Effective()
-		purl := goPurl(pkg.Path, pkg.Version)
+		purl := purl(pkg)
 		bomRef := purl
 		if seenRefs[bomRef] {
 			bomRef = "" // bom-ref must be unique within the BOM
@@ -427,6 +500,7 @@ func writeCycloneDX(info *packages.Info, w io.Writer) error {
 
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
+	enc.SetEscapeHTML(false) // purl qualifiers use &
 	return enc.Encode(bom)
 }
 
@@ -446,6 +520,60 @@ func cdxLicenses(license string) []cdxLicense {
 	default:
 		return []cdxLicense{{License: &cdxLicenseEntry{Name: license}}}
 	}
+}
+
+// mainPurpose picks the purpose of the main package: app for Go input, image for images.
+func mainPurpose(info *packages.Info, app, image string) string {
+	if info.Main.Type == packages.TypeOCI {
+		return image
+	}
+	return app
+}
+
+// purl returns the Package URL of p, or "" when it has none.
+func purl(p *packages.Package) string {
+	q := url.Values{}
+	if p.Arch != "" {
+		q.Set("arch", p.Arch)
+	}
+	var s string
+	switch p.Type {
+	case "":
+		return goPurl(p.Path, p.Version)
+	case packages.TypeOCI:
+		// The digest's ':' is encoded, as in the purl spec's oci examples.
+		name := p.Path[strings.LastIndex(p.Path, "/")+1:]
+		s = "pkg:oci/" + purlEscape(strings.ToLower(name)) + "@" + url.QueryEscape(p.Version)
+		if strings.Contains(p.Path, "/") { // an archive without a tag has no repository
+			q.Set("repository_url", p.Path)
+		}
+	default:
+		s = "pkg:" + p.Type + "/"
+		if p.Namespace != "" {
+			s += purlEscape(p.Namespace) + "/"
+		}
+		s += purlEscape(p.Path)
+		version := p.Version
+		if epoch, rest, ok := strings.Cut(version, ":"); ok && p.Type == packages.TypeRPM {
+			q.Set("epoch", epoch) // the rpm purl carries the epoch as a qualifier
+			version = rest
+		}
+		if version != "" {
+			s += "@" + purlEscape(version)
+		}
+		if p.Distro != "" {
+			q.Set("distro", p.Distro)
+		}
+	}
+	if len(q) > 0 {
+		s += "?" + strings.ReplaceAll(q.Encode(), "%2F", "/") // the spec examples keep '/' in repository_url
+	}
+	return s
+}
+
+// purlEscape percent-encodes a purl name or version, '+' included as other tools do.
+func purlEscape(s string) string {
+	return strings.ReplaceAll(url.PathEscape(s), "+", "%2B")
 }
 
 func goPurl(modulePath, version string) string {
@@ -525,18 +653,20 @@ func writeSPDX(info *packages.Info, w io.Writer) error {
 
 	refs := map[string]string{} // LicenseRef- id -> original name
 	license := func(l string) string { return spdxLicense(l, refs) }
+	ids := newSPDXIDSet()
+	mainID, _ := ids.id(&info.Main)
 
 	if info.Main.Path != "" {
 		mainPkg := spdxPackage{
-			SPDXID:                spdxID(info.Main.Path, info.Main.Version),
+			SPDXID:                mainID,
 			Name:                  info.Main.Path,
 			VersionInfo:           info.Main.Version,
 			DownloadLocation:      "NOASSERTION",
 			CopyrightText:         "NOASSERTION",
-			PrimaryPackagePurpose: "APPLICATION",
+			PrimaryPackagePurpose: mainPurpose(info, "APPLICATION", "CONTAINER"),
 			LicenseConcluded:      license(info.Main.License),
 			LicenseDeclared:       license(info.Main.License),
-			ExternalRefs:          spdxPurlRef(info.Main.Path, info.Main.Version),
+			ExternalRefs:          spdxPurlRef(&info.Main),
 		}
 		doc.Packages = append(doc.Packages, mainPkg)
 		doc.Relationships = append(doc.Relationships, spdxRelationship{
@@ -549,8 +679,12 @@ func writeSPDX(info *packages.Info, w io.Writer) error {
 	for i := range info.Deps {
 		dep := &info.Deps[i]
 		pkg := dep.Effective()
+		id, isNew := ids.id(pkg)
+		if !isNew {
+			continue // several modules replaced by the same one
+		}
 		sp := spdxPackage{
-			SPDXID:                spdxID(pkg.Path, pkg.Version),
+			SPDXID:                id,
 			Name:                  pkg.Path,
 			VersionInfo:           pkg.Version,
 			DownloadLocation:      "NOASSERTION",
@@ -558,13 +692,13 @@ func writeSPDX(info *packages.Info, w io.Writer) error {
 			PrimaryPackagePurpose: "LIBRARY",
 			LicenseConcluded:      license(pkg.License),
 			LicenseDeclared:       license(pkg.License),
-			ExternalRefs:          spdxPurlRef(pkg.Path, pkg.Version),
+			ExternalRefs:          spdxPurlRef(pkg),
 		}
 		doc.Packages = append(doc.Packages, sp)
 
 		if info.Main.Path != "" {
 			doc.Relationships = append(doc.Relationships, spdxRelationship{
-				SPDXElementID:      spdxID(info.Main.Path, info.Main.Version),
+				SPDXElementID:      mainID,
 				RelatedSPDXElement: sp.SPDXID,
 				RelationshipType:   "DEPENDS_ON",
 			})
@@ -581,6 +715,7 @@ func writeSPDX(info *packages.Info, w io.Writer) error {
 
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
+	enc.SetEscapeHTML(false) // purl qualifiers use &
 	return enc.Encode(doc)
 }
 
@@ -591,6 +726,39 @@ func spdxID(modulePath, version string) string {
 		s += "@" + version
 	}
 	return "SPDXRef-" + invalidRefRe.ReplaceAllString(s, "-")
+}
+
+// pkgSPDXID is the element id of p; OS packages are prefixed with their type.
+func pkgSPDXID(p *packages.Package) string {
+	if p.Type == "" || p.Type == packages.TypeOCI {
+		return spdxID(p.Path, p.Version)
+	}
+	return spdxID(p.Type+"-"+p.Path, p.Version)
+}
+
+// spdxIDSet gives each distinct package one element id, suffixed when ids clash.
+type spdxIDSet struct {
+	byKey map[string]string
+	used  map[string]bool
+}
+
+func newSPDXIDSet() *spdxIDSet {
+	return &spdxIDSet{byKey: map[string]string{}, used: map[string]bool{}}
+}
+
+// id returns the element id of p and whether p was not seen before.
+func (s *spdxIDSet) id(p *packages.Package) (string, bool) {
+	key := p.Type + " " + p.Ref() + " " + p.Arch
+	if id, ok := s.byKey[key]; ok {
+		return id, false
+	}
+	base := pkgSPDXID(p)
+	id := base
+	for n := 2; s.used[id]; n++ {
+		id = fmt.Sprintf("%s-%d", base, n)
+	}
+	s.byKey[key], s.used[id] = id, true
+	return id, true
 }
 
 // spdxLicense converts a license into a valid SPDX license expression.
@@ -608,8 +776,8 @@ func spdxLicense(license string, refs map[string]string) string {
 	return ref
 }
 
-func spdxPurlRef(modulePath, version string) []spdxExternalRef {
-	purl := goPurl(modulePath, version)
+func spdxPurlRef(p *packages.Package) []spdxExternalRef {
+	purl := purl(p)
 	if purl == "" {
 		return nil
 	}

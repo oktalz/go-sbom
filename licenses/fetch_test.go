@@ -296,6 +296,52 @@ func TestFetchLocalReplace(t *testing.T) {
 	}
 }
 
+func TestFetchImageSkipsOSPackagesAndLocalReplace(t *testing.T) {
+	isolateGoEnv(t, failingProxy(t).URL)
+	t.Chdir(t.TempDir())
+	// A ./fork in the working directory must not be taken for the image's.
+	if err := os.MkdirAll("fork", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join("fork", "LICENSE"), []byte(testMITText), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	info := &packages.Info{
+		Image: &packages.ImageInfo{},
+		Deps: []packages.Package{
+			{Type: packages.TypeDeb, Path: "libc6", Version: "2.36"},
+			{Type: packages.TypeAPK, Path: "musl", Version: "1.2.5-r0", License: "MIT"},
+			{Path: "example.com/orig", Version: "v1.0.0", Replace: &packages.Package{Path: "./fork"}},
+		},
+	}
+	if err := Fetch(t.Context(), info, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Deps[0].License; got != "Unknown" {
+		t.Errorf("deb without license = %q, want Unknown", got)
+	}
+	if got := info.Deps[1].License; got != "MIT" {
+		t.Errorf("apk license = %q, want MIT kept", got)
+	}
+	if got := info.Deps[2].Replace.License; got != "Unknown" {
+		t.Errorf("local replace in an image = %q, want Unknown", got)
+	}
+}
+
+func TestFetchReportsTimeout(t *testing.T) {
+	isolateGoEnv(t, "off")
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	info := &packages.Info{Deps: []packages.Package{{Path: "example.com/a", Version: "v1.0.0"}}}
+	if err := Fetch(ctx, info, Options{}); err == nil || !strings.Contains(err.Error(), "Unknown") {
+		t.Errorf("err = %v, want a timeout error", err)
+	}
+	if got := info.Deps[0].License; got != "Unknown" {
+		t.Errorf("License = %q, want Unknown", got)
+	}
+}
+
 func TestDirLicenseFilesPriorityAndCase(t *testing.T) {
 	dir := t.TempDir()
 	for _, name := range []string{"COPYING", "license.md", "LICENSE-MIT", "README.md"} {

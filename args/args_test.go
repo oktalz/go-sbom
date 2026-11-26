@@ -3,7 +3,9 @@ package args
 import (
 	"os"
 	"slices"
+	"strings"
 	"testing"
+	"time"
 )
 
 // clearFlagEnv unsets the environment variables ff maps onto flags.
@@ -13,6 +15,7 @@ func clearFlagEnv(t *testing.T) {
 	for _, name := range []string{
 		"CONFIG", "FILE", "OUTPUT", "FORMAT", "ALLOWED", "EXCLUDE", "LICENCE", "CHECK",
 		"JUNIT_FILE", "SPDX_VERSION", "MIN_CONFIDENCE", "VERSION", "HELP", "LINKS", "VERBOSE",
+		"IMAGE", "IMAGE_ARCHIVE", "PLATFORM", "IMAGE_TIMEOUT",
 	} {
 		name = EnvPrefix + "_" + name
 		t.Setenv(name, "") // registers restore on cleanup
@@ -370,5 +373,76 @@ func TestSplitList(t *testing.T) {
 	got := SplitList([]string{"MIT, ISC", " BSD-3-Clause ", "", ","})
 	if want := []string{"MIT", "ISC", "BSD-3-Clause"}; !slices.Equal(got, want) {
 		t.Errorf("SplitList = %v, want %v", got, want)
+	}
+}
+
+func TestSelectInput(t *testing.T) {
+	tests := []struct {
+		name    string
+		config  string
+		env     map[string]string
+		args    []string
+		want    Config // only File, Image and ImageArchive are compared
+		wantErr string
+	}{
+		{name: "nothing", wantErr: "nothing to analyze"},
+		{name: "file from config", config: "file: go.mod\n", want: Config{File: "go.mod"}},
+		{name: "image flag beats config file", config: "file: go.mod\n", args: []string{"--image", "alpine:3"}, want: Config{Image: "alpine:3"}},
+		{name: "archive flag beats config file", config: "file: go.mod\n", args: []string{"--image-archive", "a.tar"}, want: Config{ImageArchive: "a.tar"}},
+		{name: "positional beats env image", env: map[string]string{"GO_SBOM_IMAGE": "alpine:3"}, args: []string{"go.mod"}, want: Config{File: "go.mod"}},
+		{name: "env image beats config file", config: "file: go.mod\n", env: map[string]string{"GO_SBOM_IMAGE": "alpine:3"}, want: Config{Image: "alpine:3"}},
+		{name: "two on the command line", args: []string{"go.mod", "--image", "alpine:3"}, wantErr: "--file and --image are mutually exclusive"},
+		{name: "two flags", args: []string{"--image", "alpine:3", "--image-archive", "a.tar"}, wantErr: "--image and --image-archive are mutually exclusive"},
+		{name: "two in env", env: map[string]string{"GO_SBOM_FILE": "go.mod", "GO_SBOM_IMAGE_ARCHIVE": "a.tar"}, wantErr: "mutually exclusive"},
+		{name: "two in config", config: "file: go.mod\nimage: alpine:3\n", wantErr: "mutually exclusive"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clearFlagEnv(t)
+			if tt.config != "" {
+				writeConfig(t, ".go-sbom.yml", tt.config)
+			}
+			for k, v := range tt.env {
+				t.Setenv(k, v)
+			}
+			parsed, err := parse(tt.args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg := parsed.cfg
+			if err := resolveFile(&cfg, parsed.positional, parsed.cliFile); err != nil {
+				t.Fatal(err)
+			}
+			err = selectInput(&cfg, parsed.cliInputs, parsed.envInputs)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("err = %v, want %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := Config{File: cfg.File, Image: cfg.Image, ImageArchive: cfg.ImageArchive}
+			if got.File != tt.want.File || got.Image != tt.want.Image || got.ImageArchive != tt.want.ImageArchive {
+				t.Errorf("input = file %q image %q archive %q; want %q %q %q",
+					got.File, got.Image, got.ImageArchive, tt.want.File, tt.want.Image, tt.want.ImageArchive)
+			}
+		})
+	}
+}
+
+func TestParseImageFlags(t *testing.T) {
+	clearFlagEnv(t)
+	parsed, err := parse([]string{"--image", "alpine:3", "--platform", "linux/arm64"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.cfg.ImageTimeout != 10*time.Minute || parsed.cfg.Platform != "linux/arm64" {
+		t.Errorf("ImageTimeout %v, Platform %q; want 10m and linux/arm64", parsed.cfg.ImageTimeout, parsed.cfg.Platform)
+	}
+	writeConfig(t, ".go-sbom.yml", "image-timeout: 30s\n")
+	if parsed, err := parse(nil); err != nil || parsed.cfg.ImageTimeout != 30*time.Second {
+		t.Errorf("image-timeout from config = %v, err %v; want 30s", parsed.cfg.ImageTimeout, err)
 	}
 }

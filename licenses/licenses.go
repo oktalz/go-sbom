@@ -298,6 +298,13 @@ func Fetch(ctx context.Context, info *packages.Info, opts Options) error {
 
 	for i := range info.Deps {
 		pkg := info.Deps[i].Effective()
+		// OS packages carry their license; local replacements of image binaries are not on disk.
+		if pkg.Type != "" || (info.Image != nil && pkg.IsLocal()) {
+			if pkg.License == "" {
+				pkg.License = "Unknown"
+			}
+			continue
+		}
 		if pkg.License != "" {
 			logVerbose(opts.forModule(pkg.Ref()), "license already set to %s, skipping detection", pkg.License)
 			continue
@@ -319,6 +326,9 @@ func Fetch(ctx context.Context, info *packages.Info, opts Options) error {
 	}
 
 	wg.Wait()
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("stopped before every license was found, the rest are Unknown: %w", err)
+	}
 	return nil
 }
 

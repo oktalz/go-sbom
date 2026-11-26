@@ -9,10 +9,22 @@ import (
 	"golang.org/x/mod/modfile"
 )
 
+// Package types other than Go modules, named after their purl type.
+const (
+	TypeAPK = "apk"
+	TypeDeb = "deb"
+	TypeRPM = "rpm"
+	TypeOCI = "oci" // a container image, only used for Info.Main
+)
+
 type Package struct {
 	Path        string
 	Version     string
 	Sum         string
+	Type        string // "" for a Go module
+	Namespace   string // distro ID of an OS package (purl namespace)
+	Distro      string // distro ID and version of an OS package (purl distro qualifier)
+	Arch        string
 	Replace     *Package
 	License     string
 	LicenseLink string
@@ -44,12 +56,23 @@ func (p *Package) IsLocal() bool {
 }
 
 type Info struct {
+	Image      *ImageInfo // set when a container image was analyzed
+	Main       Package
 	GoVersion  string
 	Path       string
 	Dir        string // project directory (set when reading go.mod)
-	Main       Package
 	Deps       []Package
 	CGOEnabled bool // true when binary was built with CGO_ENABLED=1
+}
+
+// ImageInfo describes an analyzed container image.
+type ImageInfo struct {
+	Ref         string
+	Digest      string
+	Platform    string
+	Distro      string
+	Binaries    []string // paths of the Go binaries in the image
+	CGOBinaries []string
 }
 
 func Read(file string) (*Info, error) {
@@ -64,7 +87,13 @@ func readBinary(file string) (*Info, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading build info from %s: %w", file, err)
 	}
+	info := FromBuildInfo(bi)
+	info.Dir = filepath.Dir(file)
+	return info, nil
+}
 
+// FromBuildInfo maps the build info of a Go binary; Dir is left empty.
+func FromBuildInfo(bi *buildinfo.BuildInfo) *Info {
 	var cgoEnabled bool
 	for _, s := range bi.Settings {
 		if s.Key == "CGO_ENABLED" && s.Value == "1" {
@@ -76,7 +105,6 @@ func readBinary(file string) (*Info, error) {
 	info := &Info{
 		GoVersion:  bi.GoVersion,
 		Path:       bi.Path,
-		Dir:        filepath.Dir(file),
 		CGOEnabled: cgoEnabled,
 		Main: Package{
 			Path:    bi.Main.Path,
@@ -101,7 +129,7 @@ func readBinary(file string) (*Info, error) {
 		info.Deps = append(info.Deps, pkg)
 	}
 
-	return info, nil
+	return info
 }
 
 func readGoMod(file string) (*Info, error) {

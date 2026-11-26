@@ -1,0 +1,29 @@
+C:Q1v4QhLje3kWlTbTVsSWwU/3tMHN0=
+P:musl
+V:1.2.5-r0
+A:x86_64
+S:411323
+I:625664
+T:the musl c library (libc) implementation
+U:https://musl.libc.org/
+L:MIT
+o:musl
+F:lib
+R:ld-musl-x86_64.so.1
+
+C:Q1abcdefghijklmnopqrstuvwxyz0=
+P:busybox
+V:1.36.1-r29
+A:x86_64
+T:Size optimized toolbox of many common UNIX utilities
+U:https://busybox.net/
+L:GPL-2.0-only
+o:busybox
+
+C:Q1ABCDEFGHIJKLMNOPQRSTUVWXYZ0=
+P:ca-certificates-bundle
+V:20240705-r0
+A:x86_64
+T:Pre generated bundle of Mozilla certificates
+L:MPL-2.0 AND MIT
+o:ca-certificates
