@@ -375,6 +375,9 @@ git push origin v0.1.0
 
 It runs the tests and the license check, builds the binaries with `CGO_ENABLED=0`, writes their SBOMs with go-sbom itself, validates them against the CycloneDX/SPDX schemas, attests build provenance and the SBOM, and publishes the GitHub release. Tags with a `-` (e.g. `v0.2.0-rc.1`) become pre-releases.
 
+It also pushes the linux binaries as a container image to `ghcr.io/oktalz/go-sbom`, with a build provenance attestation.
+ghcr makes a new package private. After the first release, set the package to public in its GitHub settings.
+
 ### Environment Variables
 
 | Variable | Description |
