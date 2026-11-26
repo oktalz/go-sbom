@@ -523,3 +523,74 @@ func TestSortLicenses(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadGoEnvWithoutGoCommand(t *testing.T) {
+	t.Setenv("PATH", "") // no go command: plain environment variables are used
+	t.Setenv("GOPROXY", "")
+	t.Setenv("GONOPROXY", "")
+	t.Setenv("GOPRIVATE", "corp.example")
+	t.Setenv("GOMODCACHE", "")
+	first, second := filepath.Join(t.TempDir(), "a"), filepath.Join(t.TempDir(), "b")
+	t.Setenv("GOPATH", first+string(filepath.ListSeparator)+second)
+
+	env := loadGoEnv()
+	if env.NoProxy != "corp.example" {
+		t.Errorf("NoProxy = %q, want GOPRIVATE", env.NoProxy)
+	}
+	if want := filepath.Join(first, "pkg", "mod"); env.ModCache != want {
+		t.Errorf("ModCache = %q, want %q", env.ModCache, want)
+	}
+	if len(env.Proxies) == 0 || env.Proxies[0].URL != "https://proxy.golang.org" {
+		t.Errorf("Proxies = %+v, want the default proxy first", env.Proxies)
+	}
+
+	t.Setenv("GONOPROXY", "other.example")
+	t.Setenv("GOMODCACHE", "/cache")
+	if env := loadGoEnv(); env.NoProxy != "other.example" || env.ModCache != "/cache" {
+		t.Errorf("NoProxy %q, ModCache %q; want GONOPROXY and GOMODCACHE", env.NoProxy, env.ModCache)
+	}
+}
+
+func TestModCacheDir(t *testing.T) {
+	if _, err := modCacheDir("", "example.com/a", "v1.0.0"); err == nil {
+		t.Error("expected an error without a module cache")
+	}
+	if _, err := modCacheDir("/cache", "example.com/a", "v1.0.0\n"); err == nil {
+		t.Error("expected an error for an invalid version")
+	}
+	if _, err := modCacheDir("/cache", "", "v1.0.0"); err == nil {
+		t.Error("expected an error for an empty module path")
+	}
+	got, err := modCacheDir("/cache", "github.com/BurntSushi/toml", "v1.0.0")
+	if want := filepath.Join("/cache", "github.com", "!burnt!sushi", "toml@v1.0.0"); err != nil || got != want {
+		t.Errorf("modCacheDir = %q, %v; want %q", got, err, want)
+	}
+}
+
+func TestDirLicenseFilesREUSE(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "LICENSES", "nested"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string]string{
+		"LICENSES/MIT.txt": "mit", "LICENSES/README.md": "readme", "main.go": "package main",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, filepath.FromSlash(name)), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	files := dirLicenseFiles(dir)
+	if len(files) != 1 || files[0].Name != "LICENSES/MIT.txt" || string(files[0].Content) != "mit" {
+		t.Errorf("files = %+v, want only LICENSES/MIT.txt", files)
+	}
+	if files := dirLicenseFiles(filepath.Join(dir, "missing")); files != nil {
+		t.Errorf("missing dir: files = %+v", files)
+	}
+}
+
+func TestStatusError(t *testing.T) {
+	err := &statusError{URL: "https://proxy.example/x.zip", Code: 404}
+	if err.Error() != "HTTP 404 for https://proxy.example/x.zip" || !isNotFound(err) {
+		t.Errorf("Error() = %q, isNotFound = %v", err.Error(), isNotFound(err))
+	}
+}
